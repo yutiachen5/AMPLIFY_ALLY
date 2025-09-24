@@ -60,7 +60,8 @@ class DataCollatorMLM(object):
         Inspired by https://github.com/huggingface/transformers/blob/v4.27.2/src/transformers/data/data_collator.py#L607
         """
         # Unpack
-        labels, proteins = zip(*inputs)
+        global_id, labels, proteins = zip(*inputs)
+        global_id = torch.tensor(global_id, dtype=torch.long)
 
         # Tokenize the inputs
         proteins = [self.tokenizer.encode(p, self.max_length, random_truncate=self.random_truncate) for p in proteins]
@@ -96,7 +97,7 @@ class DataCollatorMLM(object):
             # Output is full -100 (ignore_index)
             y = torch.full(x.shape, -100)
 
-            return (labels, x, y, pad_mask) if self.return_labels else (x, y, pad_mask)
+            return (global_id, labels, x, y, pad_mask) if self.return_labels else (global_id, x, y, pad_mask)
 
         # MLM
         if self.span_probability is None or self.span_max is None or self.span_probability == 0 or self.span_max == 1:
@@ -134,4 +135,4 @@ class DataCollatorMLM(object):
         # Replace masked position with float(-inf)
         pad_mask = torch.where(pad_mask, float("-inf"), float(0.0)).type(self.dtype)
 
-        return (labels, x, y, pad_mask) if self.return_labels else (x, y, pad_mask)
+        return (global_id, labels, x, y, pad_mask) if self.return_labels else (global_id, x, y, pad_mask)

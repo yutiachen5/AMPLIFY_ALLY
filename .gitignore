@@ -146,6 +146,10 @@ uniref/
 *.out
 jobs
 jobs/
+/logs
 
 # DeepSpeed conf
 .deepspeed_env
+
+# specified file types
+*.txt

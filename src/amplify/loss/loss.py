@@ -2,11 +2,14 @@ import torch
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
 
+from typing import Tuple
+
 from ..tokenizer import ProteinTokenizer
 
 
 def get_loss(
     device: torch.device,
+    strategy: str, 
     vocab_path: str,
     pad_token_id: int,
     mask_token_id: int,
@@ -32,10 +35,11 @@ def get_loss(
         other_special_token_ids (list | None, optional): Indices of the special other tokens. Defaults to None.
         label_smoothing (float, optional): Label smoothing coefficient. Defaults to 0.0.
         weights (dict  |  None, optional): Class weights. Defaults to None.
+        strategy_name (str, optional): Strategy for loss manipulation. Defaults to constrained learning.
         dtype (torch.dtype, optional): Dtype of the class_weights. Defaults to torch.float32.
 
     Returns:
-        torch.nn.modules.loss._Loss: A cross-entropy loss function.
+        torch.nn.modules.loss._Loss: A cross-entropy loss function with mean or none reduction.
     """
     tokenizer = ProteinTokenizer(
         vocab_path,
@@ -53,4 +57,56 @@ def get_loss(
         class_weights = [weights.get(tokenizer.id_to_token(i), 1) for i in range(len(tokenizer))]
         class_weights = Tensor(class_weights).to(device, dtype, non_blocking=True)
 
-    return CrossEntropyLoss(weight=class_weights, reduction="mean", ignore_index=-100, label_smoothing=label_smoothing)
+    if strategy == 'ally':
+        return CrossEntropyLoss(weight=class_weights, reduction="none", ignore_index=-100, label_smoothing=label_smoothing)
+    else:
+        return CrossEntropyLoss(weight=class_weights, reduction="mean", ignore_index=-100, label_smoothing=label_smoothing)
+
+
+def get_lagrangian(
+    device: torch.device,
+    train_loss: torch.Tensor,
+    logits: torch.Tensor,
+    pad_mask: torch.Tensor,
+    lambdas_current: torch.Tensor,
+    slacks_current: torch.Tensor,
+    dual_lr: float = 0.1,
+    epsilon: float = 2.4,
+    alpha: float = 0.1,
+    **kwargs,
+) -> torch.Tensor:
+    loss_seq = train_loss.view(logits.shape[0], logits.shape[1])
+    loss_seq_mean = torch.stack([x[x!=0].mean() for x in loss_seq * pad_mask]) 
+
+    lagrangian = (loss_seq_mean*(1+lambdas_current.to(device)) - \
+                    lambdas_current.to(device)*(epsilon+slacks_current.to(device))).nanmean() + \
+                    0.5*alpha*torch.linalg.norm(slacks_current)**2
+
+    return loss_seq_mean, lagrangian
+
+
+def update_dual_variables(
+    loss_seq_mean: torch.Tensor,
+    lambdas_current: torch.Tensor,
+    slacks_current: torch.Tensor,
+    epsilon: float,
+    dual_lr: float,
+    slack_lr: float,
+    alpha: float,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    loss_seq_mean = loss_seq_mean.detach().cpu()
+    nan_mask = torch.isnan(loss_seq_mean)
+    nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
+    
+    loss_seq_mean[nan_idxs] = epsilon + slacks_current[nan_idxs] # skip nan when updating dual variables, replace epsilon with epsilon+slacks
+
+    lambdas_tmp = lambdas_current
+    lambdas_current += dual_lr*(loss_seq_mean-(epsilon+slacks_current))
+    slacks_current -= slack_lr*(0.5*alpha*slacks_current-lambdas_tmp) 
+
+    lambdas_current.data.clamp_(min=0)
+    slacks_current.data.clamp_(min=0)
+
+    return lambdas_current, slacks_current

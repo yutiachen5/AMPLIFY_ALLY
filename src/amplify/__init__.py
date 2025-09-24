@@ -2,7 +2,7 @@ from .dataset import IterableProteinDataset, DataCollatorMLM
 from .metric import Metrics
 from .model import AMPLIFY
 from .tokenizer import ProteinTokenizer
-from .trainer import trainer
+from .trainer import trainer, trainer_ally
 from .inference import Embedder, Predictor
 
 __all__ = [
@@ -12,4 +12,5 @@ __all__ = [
     "AMPLIFY",
     "ProteinTokenizer",
     "trainer",
+    "trainer_ally"
 ]

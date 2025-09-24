@@ -1,0 +1,8 @@
+train:
+  samples_before_next_set: null
+  paths: {uniref50: uniref/efficient/uniref50_train_sample.csv}
+
+
+validation:
+  samples_before_next_set: null
+  paths: {uniprot: uniref/efficient/uniref50_val_sample.csv, pdb: uniref/mila/scop_dev.csv, oas: uniref/mila/oas_dev.csv}

@@ -1,0 +1,11 @@
+_name_: ally
+
+max_rds: 5
+epsilon: 2.4
+dual_lr: 0.1
+dual_lr_gamma: 0.5
+dual_lr_stepsize: 500
+alpha: 0.1
+slack_lr: 0.01
+n_clusters: 128
+# space_in_cluster: 128

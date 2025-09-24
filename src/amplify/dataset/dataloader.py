@@ -3,8 +3,13 @@ from torch.utils.data import DataLoader
 
 from ..tokenizer import ProteinTokenizer
 
-from .iterable_protein_dataset import IterableProteinDataset
+from .iterable_protein_dataset import IterableProteinDataset, InMemoryProteinDataset
 from .data_collator import DataCollatorMLM
+
+import math
+from sklearn.cluster import MiniBatchKMeans
+
+from typing import List
 
 
 def get_dataloader(
@@ -88,7 +93,7 @@ def get_dataloader(
 
     if merge:
         return DataLoader(
-            IterableProteinDataset(paths.values(), samples_before_next_set),
+            InMemoryProteinDataset(paths.values()),
             per_device_batch_size,
             collate_fn=collator,
             num_workers=num_workers,
@@ -99,7 +104,7 @@ def get_dataloader(
     else:
         return {
             k: DataLoader(
-                IterableProteinDataset([v], samples_before_next_set),
+                InMemoryProteinDataset([v]),
                 per_device_batch_size,
                 collate_fn=collator,
                 num_workers=num_workers,
@@ -109,3 +114,81 @@ def get_dataloader(
             )
             for k, v in paths.items()
         }
+
+    
+def update_dateloader(
+    protein_dataset: torch.utils.data.Dataset,
+    embeddings: torch.Tensor,
+    lambdas: torch.Tensor,
+    global_map: List[tuple[int,int]],
+    n_clusters: int,
+    space_in_cluster: int,
+    seed: int,
+    per_device_batch_size: int,
+    paths: dict
+) -> DataLoader:
+    """Get the embeddinds after each round
+
+    Args:
+        embeddings (torch.Tensor). Sequence-level representation.
+        lambdas (torch.Tensor). Informativeness of each sequence.
+        global_map (List[tuple[int,int]]). Gobal mapping of training samples (file_id, line_number).
+        n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
+        space_in_cluster: Quota for each cluster. Defaults to 10_000.
+        seed (int): Random seed. Defaults to 0.
+        per_device_batch_size (int): Batch size for extracting embeddings. Defaults to 64.
+        
+    Returns:
+        List[]: cluster id of each sample in the training dataloader
+    """
+    clusters = []
+    idxs_within_quota, lambdas_within_quota = [], []
+    idxs_over_quota, lambdas_over_quota = [], []
+
+    kmeans = MiniBatchKMeans(
+        n_clusters=n_clusters, 
+        random_state=seed, 
+        batch_size=per_device_batch_size, 
+        n_init='auto',
+    )
+
+    clusters = kmeans.fit_predict(embeddings)
+    sorted_triplets = sorted(zip(clusters, lambdas, global_map), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
+    sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
+
+    # for i, idx in enumerate(sorted_idxs):
+    #     cluster_id = sorted_clusters[i]
+    #     lambda_value = sorted_lambdas[i]
+
+    #     if space_in_cluster[cluster_id] > 0:
+    #         idxs_within_quota.append(idx)
+    #         lambdas_within_quota.append(lambda_value)
+    #         space_in_cluster[cluster_id] -= 1
+    #     else: 
+    #         idxs_over_quota.append(idx)
+    #         lambdas_over_quota.append(lambda_value)
+
+    # idx_order = idxs_within_quota + idxs_over_quota
+    # lambda_order = lambdas_within_quota + lambdas_over_quota
+
+    for i in range(math.ceil(len(lambdas)/n_clusters)): # 128 samples in a batch --> 128 cluster
+        for j in range(n_clusters):
+            idx_order.append(sorted_idxs[i])
+            lambdas_order.append(sorted_lambdas[i])
+    
+    protein_dataset.update(idx_order)
+
+    return DataLoader(
+        protein_dataset,
+        batch_size=per_device_batch_size,
+        shuffle=False,
+        collate_fn=collator,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=(num_workers > 0),
+    )
+
+# go through by clusters
+# batch size = n_clusters = 128
+
+

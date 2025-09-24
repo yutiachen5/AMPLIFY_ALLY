@@ -4,8 +4,9 @@ import sys
 import torch
 import signal
 import shutil
+import numpy as np
 from tqdm import tqdm
-from typing import Tuple
+from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
 from accelerate import Accelerator
@@ -14,12 +15,38 @@ from deepspeed.utils import safe_get_full_fp32_param
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig
+from ..dataset import InMemoryProteinDataset
 from ..metric import Metrics
-from ..loss import get_loss
+from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 
+
+def get_embedding(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader
+) -> torch.Tensor:
+    """Get the embeddings after each round
+
+    Args:
+        model (torch.nn.Module): Model.
+        dataloader (torch.utils.data.DataLoader): Dataloader.
+
+    Returns:
+       torch.Tensor: embedding of each sample in the training dataloader
+    """
+    model.eval()
+    embedding = []
+
+    with torch.no_grad():
+        for x, y, pad_mask in dataloader:
+            emb = model(x, pad_mask).hidden_states[-1]
+            # Mean pooling to get the seq-level representation.
+            pooled_emb = torch.sum(emb*pad_mask.unsqueeze(-1), dim=1)/torch.sum(pad_mask, dim=1, keepdim=True) # [batch_size, emb_dim]
+            embedding.append(pooled_emb.detach().cpu())
+
+    return torch.cat(embedding, dim=0) 
 
 def evaluate(
     model: torch.nn.Module,
@@ -51,7 +78,7 @@ def evaluate(
     return num_val_pred, sum_val_loss, num_val_correct
 
 
-def trainer(cfg: DictConfig) -> None:
+def trainer_ally(cfg: DictConfig) -> None:
     """Entrypoint for training a model with the given configuraiton.
 
     Args:
@@ -137,7 +164,7 @@ def trainer(cfg: DictConfig) -> None:
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.bfloat16
 
-    # Train and validation Dataloaders
+    # Train, validation Dataloaders
     train_dataloader = get_dataloader(
         **cfg.tokenizer,
         **cfg.dataset.train,
@@ -155,19 +182,18 @@ def trainer(cfg: DictConfig) -> None:
         dtype=dtype_pad_mask,
     )
 
+    # Initialize parameters for constrained learning
+    lambdas = torch.zeros(len(train_dataloader.dataset), requires_grad=False)
+    slacks = torch.zeros(len(train_dataloader.dataset), requires_grad=False)
+    flag = torch.zeros(len(train_dataloader.dataset))
+
     # Accelerate
     model, optimizer, scheduler, train_dataloader = accelerator.prepare(model, optimizer, scheduler, train_dataloader)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
 
     # Get loss functions
-    train_loss_fn = get_loss(accelerator.device, **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
-    val_loss_fn = get_loss(accelerator.device, **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
-
-    # Resume from the latest checkpoint
-    skipped_train_dataloader = None
-    if cfg.trainer.resume and os.path.exists(os.path.join(cfg.trainer.dir, "checkpoints")):
-        accelerator.load_state()
-        skipped_train_dataloader = accelerator.skip_first_batches(train_dataloader, metrics["num_batches_in_epoch"])
+    train_loss_fn = get_loss(accelerator.device, cfg.strategy._name_, **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
+    val_loss_fn = get_loss(accelerator.device, cfg.strategy._name_, **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
 
     # Save the model when receiving the signal SIGTERM
     def handler(signum, frame):
@@ -188,49 +214,85 @@ def trainer(cfg: DictConfig) -> None:
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
-    while cfg.trainer.max_steps > metrics["num_steps"]:
-        # Use skipped_train_dataloader the first epoch after resuming
-        dataloader = train_dataloader if skipped_train_dataloader is None else skipped_train_dataloader
+    # steps_per_rd = cfg.trainer.max_steps // cfg.trainer.max_rds
+    file_ids, line_ids = [], []
+    for rd in range(cfg.strategy.max_rds): # fixed number of rounds
+        dataloader = train_dataloader 
 
-        for x, y, pad_mask in dataloader:
+        if rd > 0:
+            # Rebuild train data loader according to the order of informativeness and diversity
+            embeddings = get_embedding(model, dataloader)
+            dataloader = update_dataloader(inmemory_dataset, embeddings, dataloader, **cfg.strategy, **cfg.traner.validation, **cfg.dataset.train)
+
+
+        for global_id, x, y, pad_mask in dataloader:
+            # Keep the indices of traning samples
+            # file_ids += file_id
+            global_id = global_id.detach().cpu()
+            global_id = np.array(global_id)
+
             # Increment the number of batches
             metrics["local_num_batches"] += 1
 
+            # Extract the lambda for the current epoch
+            lambdas_current = lambdas[global_id]
+            slacks_current = slacks[global_id]
+
+            # Keep recored the number of times each sample was seen by the model
+            flag[global_id] += 1
+
             # Under the no_sync context manager, PyTorch will skip synchronizing the gradients when .backward() is
-            # called, and the first call to .backward() outside this context manager will trigger the synchronization
+            # called, and the first call to .backward() outside this context manager will trigger the synchronization (accumulate gradients)
             if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
                 with accelerator.no_sync(model):
                     # Forward pass
                     logits = model(x, pad_mask).logits
-                    train_loss = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+                    train_loss_seq = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+                    train_loss_batch = torch.mean(train_loss_seq, dim=0)
 
                     # Log metrics
                     metrics["num_batches_in_epoch"] += 1
                     metrics["local_num_samples"] += x.shape[0]
                     metrics["local_num_tokens"] += (pad_mask == 0).sum().item()
                     metrics["local_num_train_pred"] += torch.sum(y != -100).item()
-                    metrics["local_sum_train_loss"] += train_loss.item() * torch.sum(y != -100).item()
+                    metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                     # Compute gradient
-                    accelerator.backward(train_loss)
+                    train_loss_seq_mean, lagrangian = get_lagrangian(accelerator.device, train_loss_loss, logits, pad_mask, lambdas_current, slacks_current, **cfg.strategy)
+                    accelerator.backward(lagrangian)
+
+                    # Update dual variables for constrained learning
+                    lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq_mean, lambdas_current, slacks_current, **cfg.strategy)
+
+                    lambdas[global_id] = lambdas_updated.detach().cpu()
+                    slacks[global_id] = slacks_updated.detach().cpu() 
+
+                    metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
+                    metrics["slack_mean"] = slacks[flag >= 1].mean().item()
+
             else:
                 # Forward pass
                 logits = model(x, pad_mask).logits
-                train_loss = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+                train_loss_seq = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+                train_loss_batch = torch.mean(train_loss_seq, dim=0)
 
                 # Log metrics
                 pbar.update(1)
-                metrics["num_steps"] += 1
+                metrics["num_steps"] += 1 # number of gradient updates
                 metrics["num_batches_in_epoch"] += 1
                 metrics["local_num_samples"] += x.shape[0]
                 metrics["local_num_tokens"] += (pad_mask == 0).sum().item()
                 metrics["local_num_train_pred"] += torch.sum(y != -100).item()
-                metrics["local_sum_train_loss"] += train_loss.item() * torch.sum(y != -100).item()
+                metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                 metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                 # Compute gradient
-                accelerator.backward(train_loss)
+                train_loss_seq_mean, lagrangian = get_lagrangian(accelerator.device, train_loss_seq, logits, pad_mask, lambdas_current, slacks_current, **cfg.strategy)
+                accelerator.backward(lagrangian)
+
+                metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
+                metrics["slack_mean"] = slacks[flag >= 1].mean().item()
 
                 # Evaluate the model
                 if metrics["num_steps"] % cfg.trainer.eval_steps == 0:
@@ -266,6 +328,12 @@ def trainer(cfg: DictConfig) -> None:
 
                 # Update the parameters and the scheduler
                 optimizer.step()
+
+                # Update dual variables for constrained learning
+                lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq_mean, lambdas_current, slacks_current, **cfg.strategy)
+                metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
+                metrics["slack_mean"] = slacks[flag >= 1].mean().item()
+                
                 scheduler.step()
 
                 # Reset the gradient
