@@ -132,7 +132,7 @@ class DataCollatorMLM(object):
         random_words = torch.multinomial(self.replacement_ids, torch.numel(x), replacement=True).view(x.size())
         x[random_ids] = random_words[random_ids]
 
-        # Replace masked position with float(-inf)
+        # Replace masked position with float(-inf), True: inf, False: 0
         pad_mask = torch.where(pad_mask, float("-inf"), float(0.0)).type(self.dtype)
 
         return (global_id, labels, x, y, pad_mask) if self.return_labels else (global_id, x, y, pad_mask)

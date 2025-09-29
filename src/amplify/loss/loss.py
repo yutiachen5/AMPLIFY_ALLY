@@ -58,16 +58,14 @@ def get_loss(
         class_weights = Tensor(class_weights).to(device, dtype, non_blocking=True)
 
     if strategy == 'ally':
-        return CrossEntropyLoss(weight=class_weights, reduction="none", ignore_index=-100, label_smoothing=label_smoothing)
+        return CrossEntropyLoss(weight=class_weights, reduction="none", label_smoothing=label_smoothing)
     else:
         return CrossEntropyLoss(weight=class_weights, reduction="mean", ignore_index=-100, label_smoothing=label_smoothing)
 
 
 def get_lagrangian(
     device: torch.device,
-    train_loss: torch.Tensor,
-    logits: torch.Tensor,
-    pad_mask: torch.Tensor,
+    train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
     slacks_current: torch.Tensor,
     dual_lr: float = 0.1,
@@ -75,18 +73,16 @@ def get_lagrangian(
     alpha: float = 0.1,
     **kwargs,
 ) -> torch.Tensor:
-    loss_seq = train_loss.view(logits.shape[0], logits.shape[1])
-    loss_seq_mean = torch.stack([x[x!=0].mean() for x in loss_seq * pad_mask]) 
 
-    lagrangian = (loss_seq_mean*(1+lambdas_current.to(device)) - \
+    lagrangian = (train_loss_seq*(1+lambdas_current.to(device)) - \
                     lambdas_current.to(device)*(epsilon+slacks_current.to(device))).nanmean() + \
                     0.5*alpha*torch.linalg.norm(slacks_current)**2
 
-    return loss_seq_mean, lagrangian
+    return lagrangian
 
 
 def update_dual_variables(
-    loss_seq_mean: torch.Tensor,
+    train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
     slacks_current: torch.Tensor,
     epsilon: float,
@@ -96,14 +92,14 @@ def update_dual_variables(
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-    loss_seq_mean = loss_seq_mean.detach().cpu()
-    nan_mask = torch.isnan(loss_seq_mean)
+    train_loss_seq = train_loss_seq.detach().cpu()
+    nan_mask = torch.isnan(train_loss_seq)
     nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
     
-    loss_seq_mean[nan_idxs] = epsilon + slacks_current[nan_idxs] # skip nan when updating dual variables, replace epsilon with epsilon+slacks
+    train_loss_seq[nan_idxs] = epsilon + slacks_current[nan_idxs] # skip nan when updating dual variables, replace epsilon with epsilon+slacks
 
     lambdas_tmp = lambdas_current
-    lambdas_current += dual_lr*(loss_seq_mean-(epsilon+slacks_current))
+    lambdas_current += dual_lr*(train_loss_seq-(epsilon+slacks_current))
     slacks_current -= slack_lr*(0.5*alpha*slacks_current-lambdas_tmp) 
 
     lambdas_current.data.clamp_(min=0)

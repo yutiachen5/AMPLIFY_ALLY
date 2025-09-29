@@ -18,31 +18,30 @@ class IterableProteinDataset(IterableDataset):
         self.paths = paths
         self.samples_per_set = samples_before_next_set if samples_before_next_set is not None else [1] * len(paths)
 
-    def parse_file(self) -> Iterator[Tuple[int, int, str, str]]:
+    def parse_file(self) -> str:
         worker_info = get_worker_info()
         step = 1 if worker_info is None else worker_info.num_workers
         offset = 0 if worker_info is None else worker_info.id
 
-        files, iterators = [], []
-        for file_id, (path, n) in enumerate(zip(self.paths, self.samples_per_set)):
-            f = open(path, "r")
-            next(f)  # skip header
-            files.append(f)
+        files, iterator = [], []
+        for path, n in zip(self.paths, self.samples_per_set):
+            # Open the file
+            file = open(path, "r")
+            # Skip header
+            next(file)
+            # Add the file to the list of files to close them at the end
+            files.append(file)
+            # Add the file iterator to the list of iterators n times
+            iterator.extend(repeat(file, n))
 
-            # Wrap each line with file_id and line_number
-            def line_enumerator(file, file_id):
-                for line_number, row in enumerate(file):
-                    yield file_id, line_number, row
+        # Interleave the iterators and pad with None
+        iterator = chain.from_iterable(zip_longest(*iterator, fillvalue=None))
 
-            iterators.extend(repeat(line_enumerator(f, file_id), n))
-
-        final_iterator = chain.from_iterable(zip_longest(*iterators, fillvalue=None))
-
-        for row in islice(final_iterator, offset, None, step):
+        # Iterate through the datasets
+        for row in islice(iterator, offset, None, step):
             if row is not None:
-                file_id, line_number, raw = row
-                record_id, sequence = raw.strip().split(",")
-                yield file_id, line_number, record_id, sequence
+                # Assumes (record_id,sequence)
+                yield row.strip().split(",")
 
         # Closing the files
         for file in files:
@@ -76,6 +75,7 @@ class InMemoryProteinDataset(Dataset):
 
     def update(self, idx_order):
         self.idx_order = idx_order
+        return self
 
     def __getitem__(self, i: int) -> Tuple[str, str]:
         """

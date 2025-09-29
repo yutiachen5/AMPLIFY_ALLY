@@ -18,10 +18,28 @@ from ..model import AMPLIFY, AMPLIFYConfig
 from ..dataset import InMemoryProteinDataset
 from ..metric import Metrics
 from ..loss import get_loss, get_lagrangian, update_dual_variables
-from ..dataset import get_dataloader
+from ..dataset import get_dataloader, update_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 
+def initialization(
+    dataloader: torch.utils.data.DataLoader
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.array]:
+    """Initialize the parameters for each epoch
+
+    Args:
+        dataloader: torch.utils.data.DataLoader
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    """
+    n_all = len(dataloader.dataset)
+    lambdas = torch.zeros(n_all, requires_grad=False)
+    slacks = torch.zeros(n_all, requires_grad=False)
+    flag = torch.zeros(n_all)
+    idx_order = np.arange(n_all)
+
+    return lambdas, slacks, flag, idx_order
 
 def get_embedding(
     model: torch.nn.Module,
@@ -40,13 +58,14 @@ def get_embedding(
     embedding = []
 
     with torch.no_grad():
-        for x, y, pad_mask in dataloader:
-            emb = model(x, pad_mask).hidden_states[-1]
-            # Mean pooling to get the seq-level representation.
-            pooled_emb = torch.sum(emb*pad_mask.unsqueeze(-1), dim=1)/torch.sum(pad_mask, dim=1, keepdim=True) # [batch_size, emb_dim]
+        for global_id, x, y, pad_mask in dataloader:
+            emb = model(x, pad_mask, output_hidden_states=True).hidden_states[-1]
+            # Mean pooling to get the seq-level representation. 0: valid, inf: false
+            pooling_indicator = torch.isfinite(pad_mask).to(torch.int)
+            pooled_emb = torch.sum(emb*pooling_indicator.unsqueeze(-1), dim=1)/torch.sum(pooling_indicator, dim=1, keepdim=True) # [batch_size, emb_dim], 0 is for valid pos
             embedding.append(pooled_emb.detach().cpu())
-
-    return torch.cat(embedding, dim=0) 
+        embedding = torch.cat(embedding, dim=0) 
+    return embedding
 
 def evaluate(
     model: torch.nn.Module,
@@ -68,11 +87,13 @@ def evaluate(
     model.eval()
     sum_val_loss, num_val_correct, num_val_pred = 0, 0, 0
     with torch.no_grad():
-        for x, y, pad_mask in dataloader:
+        for global_id, x, y, pad_mask in dataloader:
             logits = model(x, pad_mask).logits
-            val_loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
+            valid_pos = (y != -100)
+            val_loss_token = loss_fn(logits.view(-1, vocab_size), y.view(-1))
+            val_loss_batch = ((val_loss_token.view(logits.shape[0], logits.shape[1]) * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)).mean()
             num_val_pred += torch.sum(y != -100).item()
-            sum_val_loss += val_loss.item() * torch.sum(y != -100).item()
+            sum_val_loss += val_loss_batch.item() * torch.sum(y != -100).item()
             num_val_correct += torch.sum(torch.argmax(logits, dim=-1) == y).item()
     model.train()
     return num_val_pred, sum_val_loss, num_val_correct
@@ -183,9 +204,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
 
     # Initialize parameters for constrained learning
-    lambdas = torch.zeros(len(train_dataloader.dataset), requires_grad=False)
-    slacks = torch.zeros(len(train_dataloader.dataset), requires_grad=False)
-    flag = torch.zeros(len(train_dataloader.dataset))
+    lambdas, slacks, flag, idx_order = initialization(train_dataloader)
 
     # Accelerate
     model, optimizer, scheduler, train_dataloader = accelerator.prepare(model, optimizer, scheduler, train_dataloader)
@@ -216,13 +235,26 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # steps_per_rd = cfg.trainer.max_steps // cfg.trainer.max_rds
     file_ids, line_ids = [], []
+    dataloader = train_dataloader 
     for rd in range(cfg.strategy.max_rds): # fixed number of rounds
-        dataloader = train_dataloader 
-
+        
         if rd > 0:
             # Rebuild train data loader according to the order of informativeness and diversity
             embeddings = get_embedding(model, dataloader)
-            dataloader = update_dataloader(inmemory_dataset, embeddings, dataloader, **cfg.strategy, **cfg.traner.validation, **cfg.dataset.train)
+            dataloader = update_dataloader(
+                embeddings, 
+                idx_order, 
+                lambdas, 
+                **cfg.strategy, 
+                **cfg.tokenizer,
+                **cfg.dataset.train,
+                **cfg.trainer.train,
+                merge=True,
+                return_labels=False,
+                dtype=dtype_pad_mask
+            )
+            dataloader = accelerator.prepare(dataloader)
+            # lambdas, slacks, flag, idx_order = initialization(train_dataloader)
 
 
         for global_id, x, y, pad_mask in dataloader:
@@ -234,7 +266,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             # Increment the number of batches
             metrics["local_num_batches"] += 1
 
-            # Extract the lambda for the current epoch
+            # Extract the lambda for the current batch
             lambdas_current = lambdas[global_id]
             slacks_current = slacks[global_id]
 
@@ -247,8 +279,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                 with accelerator.no_sync(model):
                     # Forward pass
                     logits = model(x, pad_mask).logits
-                    train_loss_seq = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
-                    train_loss_batch = torch.mean(train_loss_seq, dim=0)
+                    valid_pos = (y != -100)
+                    train_loss_token = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
+                    train_loss_seq = (train_loss_token.view(logits.shape[0], logits.shape[1]) * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
+                    train_loss_batch = train_loss_seq.mean()  
 
                     # Log metrics
                     metrics["num_batches_in_epoch"] += 1
@@ -259,11 +293,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                     # Compute gradient
-                    train_loss_seq_mean, lagrangian = get_lagrangian(accelerator.device, train_loss_loss, logits, pad_mask, lambdas_current, slacks_current, **cfg.strategy)
+                    lagrangian = get_lagrangian(accelerator.device, train_loss, lambdas_current, slacks_current, **cfg.strategy)
+                    # print('lag', lagrangian)
                     accelerator.backward(lagrangian)
 
                     # Update dual variables for constrained learning
-                    lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq_mean, lambdas_current, slacks_current, **cfg.strategy)
+                    lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
 
                     lambdas[global_id] = lambdas_updated.detach().cpu()
                     slacks[global_id] = slacks_updated.detach().cpu() 
@@ -273,9 +308,11 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             else:
                 # Forward pass
-                logits = model(x, pad_mask).logits
-                train_loss_seq = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
-                train_loss_batch = torch.mean(train_loss_seq, dim=0)
+                logits = model(x, pad_mask).logits # x, mask: [batch_size, max_len]
+                valid_pos = (y != -100)
+                train_loss_token = train_loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
+                train_loss_seq = (train_loss_token.view(logits.shape[0], logits.shape[1]) * valid_pos).sum(dim=1) / valid_pos.sum(dim=1) # [batch_size, max_len]
+                train_loss_batch = train_loss_seq.mean()  
 
                 # Log metrics
                 pbar.update(1)
@@ -288,7 +325,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                 # Compute gradient
-                train_loss_seq_mean, lagrangian = get_lagrangian(accelerator.device, train_loss_seq, logits, pad_mask, lambdas_current, slacks_current, **cfg.strategy)
+                lagrangian = get_lagrangian(accelerator.device, train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
                 accelerator.backward(lagrangian)
 
                 metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
@@ -330,7 +367,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 optimizer.step()
 
                 # Update dual variables for constrained learning
-                lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq_mean, lambdas_current, slacks_current, **cfg.strategy)
+                lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
                 metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
                 metrics["slack_mean"] = slacks[flag >= 1].mean().item()
                 
