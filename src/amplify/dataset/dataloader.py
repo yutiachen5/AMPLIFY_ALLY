@@ -170,7 +170,7 @@ def update_dataloader(
         n_init='auto',
     )
 
-    clusters = kmeans.fit_predict(embeddings)
+    clusters = kmeans.fit_predict(embeddings.detach().to(torch.float32).cpu().numpy())
     sorted_triplets = sorted(zip(clusters, lambdas, idx_order), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
     sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
 

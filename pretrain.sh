@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=AMPLIFY_8M
+#SBATCH --job-name=reinitialize.n_100
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -49,10 +49,10 @@ srun \
 	--num_machines=$SLURM_JOB_NUM_NODES \
 	--mixed_precision=bf16 \
 	--gradient_clipping=1.0 \
-	/hpc/group/naderilab/eleanor/AMPLIFY/scripts/pretrain.py \
-	hydra.run.dir=logs/AMPLIFY_8M \
-	wandb.dir=logs/AMPLIFY_8M \
-	wandb.name=AMPLIFY_8M \
+	/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/scripts/pretrain.py \
+	hydra.run.dir=logs/$SLURM_JOB_NAME \
+	wandb.dir=logs/$SLURM_JOB_NAME \
+	wandb.name=$SLURM_JOB_NAME \
 	model=[amplify,8M] \
 	optimizer=adamw \
 	optimizer.lr=0.001 \
@@ -60,7 +60,7 @@ srun \
 	optimizer.weight_decay=0.01 \
 	scheduler=cosine_decay \
 	scheduler.warmup_steps=1000 \
-	trainer.dir=logs/AMPLIFY_8M \
+	trainer.dir=logs/$SLURM_JOB_NAME \
 	trainer.max_steps=1000000 \
 	scheduler.final_step=900000 \
 	trainer.train.per_device_batch_size=256 \

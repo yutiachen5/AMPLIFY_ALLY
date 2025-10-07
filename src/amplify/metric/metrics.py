@@ -39,6 +39,10 @@ class Metrics(defaultdict):
         metrics_log["num_samples"] = self["num_samples"]
         metrics_log["num_tokens"] = self["num_tokens"]
         metrics_log["num_masked_tokens"] = self["num_masked_tokens"]
+        metrics_log["lambda_mean"] = self["lambda_mean"]
+        metrics_log["slack_mean"] = self["slack_mean"]
+        metrics_log["constraint_violations"] = self["constraint_violations"]
+        
         if metrics_agg["local_num_train_pred"] > 0:
             metrics_log["train_loss"] = metrics_agg["local_sum_train_loss"] / metrics_agg["local_num_train_pred"]
             metrics_log["train_perplexity"] = math.exp(

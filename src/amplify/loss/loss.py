@@ -9,7 +9,7 @@ from ..tokenizer import ProteinTokenizer
 
 def get_loss(
     device: torch.device,
-    strategy: str, 
+    reduction: str, 
     vocab_path: str,
     pad_token_id: int,
     mask_token_id: int,
@@ -57,7 +57,7 @@ def get_loss(
         class_weights = [weights.get(tokenizer.id_to_token(i), 1) for i in range(len(tokenizer))]
         class_weights = Tensor(class_weights).to(device, dtype, non_blocking=True)
 
-    if strategy == 'ally':
+    if reduction == 'none':
         return CrossEntropyLoss(weight=class_weights, reduction="none", label_smoothing=label_smoothing)
     else:
         return CrossEntropyLoss(weight=class_weights, reduction="mean", ignore_index=-100, label_smoothing=label_smoothing)
@@ -76,9 +76,10 @@ def get_lagrangian(
 
     lagrangian = (train_loss_seq*(1+lambdas_current.to(device)) - \
                     lambdas_current.to(device)*(epsilon+slacks_current.to(device))).nanmean() + \
-                    0.5*alpha*torch.linalg.norm(slacks_current)**2
+                    0.5*alpha*torch.linalg.norm(slacks_current.to(device))**2
+    constraint_violations = (train_loss_seq - (epsilon+slacks_current.to(device))).nanmean().item() # usually 0 positive
 
-    return lagrangian
+    return lagrangian, constraint_violations
 
 
 def update_dual_variables(
@@ -96,7 +97,7 @@ def update_dual_variables(
     nan_mask = torch.isnan(train_loss_seq)
     nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
     
-    train_loss_seq[nan_idxs] = epsilon + slacks_current[nan_idxs] # skip nan when updating dual variables, replace epsilon with epsilon+slacks
+    train_loss_seq[nan_idxs] = (epsilon + slacks_current[nan_idxs]).to(train_loss_seq.dtype)
 
     lambdas_tmp = lambdas_current
     lambdas_current += dual_lr*(train_loss_seq-(epsilon+slacks_current))
