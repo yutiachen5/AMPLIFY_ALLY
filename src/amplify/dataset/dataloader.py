@@ -12,6 +12,8 @@ from sklearn.cluster import MiniBatchKMeans
 from typing import List
 import numpy as np
 
+from collections import defaultdict
+
 
 def get_dataloader(
     vocab_path: str,
@@ -189,12 +191,26 @@ def update_dataloader(
     # idx_order = idxs_within_quota + idxs_over_quota
     # lambda_order = lambdas_within_quota + lambdas_over_quota
 
-    updated_idx_order, updated_lambda = [], []
+    # updated_idx_order, updated_lambda = [], []
     
-    for i in range(math.ceil(len(lambdas)/n_clusters)): # 128 samples in a batch --> 128 cluster
-        for j in range(n_clusters):
-            updated_idx_order.append(sorted_idxs[i])
-            updated_lambda.append(sorted_lambdas[i])
+    # for i in range(math.ceil(len(lambdas)/n_clusters)): # 128 samples in a batch --> 128 cluster
+    #     for c in range(n_clusters):
+    #         updated_idx_order.append(sorted_idxs[i])
+    #         updated_lambda.append(sorted_lambdas[i])
+
+    cluster_to_samples = defaultdict(list)
+    for c, l, idx in zip(sorted_clusters, sorted_lambdas, sorted_idxs):
+        cluster_to_samples[c].append((l, idx))
+
+    updated_idx_order, updated_lambda = [], []
+    max_len = max(len(v) for v in cluster_to_samples.values())
+
+    for i in range(max_len):                
+        for c in range(n_clusters):         
+            if i < len(cluster_to_samples[c]):   # skip if cluster shorter
+                l, idx = cluster_to_samples[c][i]
+                updated_idx_order.append(idx)
+                updated_lambda.append(l)
 
     tokenizer = ProteinTokenizer(
         vocab_path,
