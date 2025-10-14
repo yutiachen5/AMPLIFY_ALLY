@@ -1,11 +1,13 @@
 __all__ = [
     "IterableProteinDataset",
-    "InMemoryProteinDataset"
+    "InMemoryProteinDataset",
+    "LambdaSet",
+    "EmbDataset",
     "DataCollatorMLM",
     "get_dataloader",
     "update_dataloader"
 ]
 
-from .iterable_protein_dataset import IterableProteinDataset, InMemoryProteinDataset
+from .datasets import IterableProteinDataset, InMemoryProteinDataset, LambdaSet, EmbDataset
 from .data_collator import DataCollatorMLM
 from .dataloader import get_dataloader, update_dataloader

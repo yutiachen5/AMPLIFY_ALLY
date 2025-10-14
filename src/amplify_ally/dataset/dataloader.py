@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader
 
 from ..tokenizer import ProteinTokenizer
 
-from .iterable_protein_dataset import IterableProteinDataset, InMemoryProteinDataset
+from .datasets import IterableProteinDataset, InMemoryProteinDataset
 from .data_collator import DataCollatorMLM
 
 import math
@@ -123,7 +123,6 @@ def update_dataloader(
     idx_order: np.array,
     lambdas: torch.Tensor,
     n_clusters: int,
-    # space_in_cluster: int,
     seed: int,
     vocab_path: str,
     pad_token_id: int,

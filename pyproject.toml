@@ -34,3 +34,7 @@ keywords = ["Machine Learning", "Large Language Models", "Protein Language Model
 
 [project.optional-dependencies]
 dev = ["sphinx", "black", "piccolo-theme", "pytest", "pytest-cov", "pytest-clarity", "xeger"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["amplify_ally*"]

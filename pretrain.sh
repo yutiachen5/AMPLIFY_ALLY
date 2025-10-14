@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=reinitialize.n_100
+#SBATCH --job-name=ALLY_nsamples.30M_nsteps.6k
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
-
+#SBATCH --exclude=dcc-h200-gpu-[07,08]
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt

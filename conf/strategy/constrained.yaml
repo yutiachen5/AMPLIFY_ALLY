@@ -9,4 +9,9 @@ dual_lr_stepsize: 500
 alpha: 0.1
 slack_lr: 0.01
 n_clusters: 128
-n_steps: 10000
+n_steps: 6000
+
+# lambdanet training
+val_size: 0.2 
+max_epochs: 100 
+per_device_batch_size_lambdanet: 256

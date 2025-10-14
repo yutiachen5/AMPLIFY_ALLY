@@ -1,7 +1,7 @@
 import hydra
 from omegaconf import DictConfig
 
-from amplify import trainer, trainer_ally
+from amplify_ally import trainer, trainer_ally
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")

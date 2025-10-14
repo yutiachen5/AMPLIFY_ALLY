@@ -50,6 +50,7 @@ class IterableProteinDataset(IterableDataset):
     def __iter__(self) -> Iterator[Tuple[str, str]]:
         return self.parse_file()
 
+
 class InMemoryProteinDataset(Dataset):
     def __init__(self, paths: dict, **kwargs):
         """
@@ -78,12 +79,31 @@ class InMemoryProteinDataset(Dataset):
         return self
 
     def __getitem__(self, i: int) -> Tuple[str, str]:
-        """
-        Fetch a sample by index.
-
-        Returns:
-            (record_id, sequence)
-        """
         global_idx = self.idx_order[i]
         sample = self.samples[global_idx]
         return global_idx, sample[0], sample[1] # (record_id, sequence)
+
+
+class LambdaSet(Dataset):
+    def __init__(self, X_train, X_test, y_train, y_test, train=True):
+        if train:
+            self.x_data, self.y_data = X_train, y_train
+        else:
+            self.x_data, self.y_data = X_test, y_test
+    
+    def __getitem__(self, i):
+        return self.x_data[i].float(), self.y_data[i].float()
+
+    def __len__(self):
+        return self.y_data.shape[0]
+
+
+class EmbDataset(Dataset):
+    def __init__(self, emb):
+        self.emb = emb
+
+    def __len__(self):
+        return len(self.emb)
+
+    def __getitem__(self, i):
+        return self.emb[i]
