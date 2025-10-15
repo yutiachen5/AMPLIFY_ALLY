@@ -27,6 +27,7 @@ class LambdaNetTrainer:
         flag: np.ndarray,
         accelerator: Accelerator,
         per_device_batch_size_lambdanet: int,
+        dtype: torch.dtype = torch.float32,
         **kwargs,
     ):
         """
@@ -41,6 +42,7 @@ class LambdaNetTrainer:
             flag (np.ndarray): Indicator array, where `flag[i] >= 1` means the sample (with global ID `i`) was seen/trained by the model, and `< 1` means unseen.
             accelerator (accelerate.Accelerator): Handles device placement and distributed training.
             per_device_batch_size_lambdanet (int): Batch size per device for lambdanet trainer.
+            dtype (torch.dtype, optional): Dtype of the pad_mask. Defaults to torch.float32.
 
         Attributes:
             trained_idx (np.ndarray): Subset of idx where flag >= 1.
@@ -55,11 +57,11 @@ class LambdaNetTrainer:
         self.per_device_batch_size = per_device_batch_size_lambdanet
 
         self.trained_idx = idx[flag[idx] >= 1]
-        self.trained_emb = embeddings[flag[idx] >= 1].to(device)
-        self.trained_lambdas = lambdas[flag[idx] >= 1].to(device)
+        self.trained_emb = embeddings[flag[idx] >= 1].to(device=device, dtype=dtype)
+        self.trained_lambdas = lambdas[flag[idx] >= 1].to(device=device, dtype=dtype)
 
         self.untrained_idx = idx[flag[idx] < 1]
-        self.untrained_emb = embeddings[flag[idx] < 1].to(device)
+        self.untrained_emb = embeddings[flag[idx] < 1].to(device=device, dtype=dtype)
 
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
@@ -110,10 +112,8 @@ class LambdaNetTrainer:
     def reconstruct_lambdas(self, pred_lambdas: list[float]) -> np.ndarray:
         full_lambdas = np.zeros(len(self.trained_idx) + len(self.untrained_idx), dtype=float)
 
-        # Fill trained samples - use true lambda
-        full_lambdas[self.trained_idx] = self.trained_lambdas.cpu().numpy()
-
-        # Fill unseen samples - use predicted lambda
+        # Use true lambda to fill trained and pred lambda to fill untrained samples
+        full_lambdas[self.trained_idx] = self.trained_lambdas.float().cpu().numpy()
         full_lambdas[self.untrained_idx] = self.lambda_pred
 
         return torch.tensor(full_lambdas)

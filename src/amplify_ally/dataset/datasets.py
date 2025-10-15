@@ -92,7 +92,7 @@ class LambdaSet(Dataset):
             self.x_data, self.y_data = X_test, y_test
     
     def __getitem__(self, i):
-        return self.x_data[i].float(), self.y_data[i].float()
+        return self.x_data[i], self.y_data[i]
 
     def __len__(self):
         return self.y_data.shape[0]

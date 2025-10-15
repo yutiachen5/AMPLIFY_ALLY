@@ -211,7 +211,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Accelerate
     model, optimizer, scheduler, train_dataloader = accelerator.prepare(model, optimizer, scheduler, train_dataloader)
-    reg = reg.to(accelerator.device)
+    reg = reg.to(device=accelerator.device, dtype=dtype_pad_mask)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
 
     # Get loss functions
@@ -256,6 +256,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 lambdas=lambdas, 
                 flag=flag, 
                 accelerator=accelerator, 
+                dtype=dtype_pad_mask,
                 **cfg.strategy
             )
             lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy)
