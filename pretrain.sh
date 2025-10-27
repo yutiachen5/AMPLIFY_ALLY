@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.30M_nsteps.6k
+#SBATCH --job-name=testing_lambdanet10
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -47,7 +47,7 @@ srun \
 	--main_process_port=$MASTER_PORT \
 	--num_processes=$(($SLURM_JOB_NUM_NODES * $SLURM_GPUS_ON_NODE)) \
 	--num_machines=$SLURM_JOB_NUM_NODES \
-	--mixed_precision=bf16 \
+	--mixed_precision=no \
 	--gradient_clipping=1.0 \
 	/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/scripts/pretrain.py \
 	hydra.run.dir=logs/$SLURM_JOB_NAME \

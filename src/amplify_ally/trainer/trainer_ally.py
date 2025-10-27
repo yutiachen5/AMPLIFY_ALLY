@@ -5,6 +5,7 @@ import torch
 import signal
 import shutil
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
@@ -15,13 +16,14 @@ from deepspeed.utils import safe_get_full_fp32_param
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
-from ..dataset import InMemoryProteinDataset
 from ..metric import Metrics
 from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_dataloader, update_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from .trainer_lambdanet import LambdaNetTrainer
+
+import datetime 
 
 
 def get_embedding(
@@ -55,8 +57,9 @@ def get_embedding(
             emb = model(x, pad_mask, output_hidden_states=True).hidden_states[-1]
 
             # Mean pooling to get the seq-level representation. 0: valid, inf: false
-            pooling_indicator = torch.isfinite(pad_mask).to(torch.int)
-            pooled_emb = torch.sum(emb*pooling_indicator.unsqueeze(-1), dim=1)/torch.sum(pooling_indicator, dim=1, keepdim=True) # [batch_size, emb_dim], 0 is for valid pos
+            pooling_indicator = torch.isfinite(pad_mask).to(torch.float32)
+            valid_counts = torch.sum(pooling_indicator, dim=1, keepdim=True).clamp(min=1.0)
+            pooled_emb = torch.sum(emb*pooling_indicator.unsqueeze(-1), dim=1)/valid_counts # [batch_size, emb_dim], seq-level embeddings
             embedding.append(pooled_emb)
 
             pbar.update(1)
@@ -168,7 +171,9 @@ def trainer_ally(cfg: DictConfig) -> None:
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
     reg = LambdaNet(input_dim=cfg.model.hidden_size)
     optimizer = get_optimizer(model, **cfg.optimizer)
+    optimizer_reg = get_optimizer(reg, **cfg.strategy)
     scheduler = get_scheduler(optimizer, **cfg.scheduler)
+    # scheduler_reg = optim.lr_scheduler.StepLR(optimizer_reg, step_size=1, gamma=0.95)
 
     # Log the number of parameters
     accelerator.log({"model_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)})
@@ -241,15 +246,22 @@ def trainer_ally(cfg: DictConfig) -> None:
     file_ids, line_ids = [], []
     dataloader = train_dataloader 
     for rd in range(cfg.strategy.max_rds): # fixed number of rounds
-        
         if rd > 0:
             # Rebuild train data loader according to the order of informativeness and diversity
             embeddings = get_embedding(model, dataloader, accelerator)
 
+            now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            save_dir = f"/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/outputs/{now}/"
+            os.makedirs(save_dir, exist_ok=True)
+            np.save(os.path.join(save_dir, "embeddings.npy"), embeddings.detach().cpu().to(torch.float32).numpy())
+
+            save_df = pd.DataFrame({"idx":idx_order, "flag": flag, "lambdas": lambdas})
+            save_df.to_csv(os.path.join(save_dir, "lambdas.csv"), index=False)
+
             # Train lambdanet using samples which were seen by the model
             lambdanet_trainer = LambdaNetTrainer(
                 model=reg, 
-                optimizer=optimizer, 
+                optimizer=optimizer_reg, 
                 device=accelerator.device, 
                 idx=idx_order, 
                 embeddings=embeddings, 
@@ -262,7 +274,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy)
 
             # Update dataloder based on actual and predicted lambda
-            dataloader = update_dataloader(
+            idx_order, dataloader = update_dataloader(
                 embeddings, 
                 idx_order, 
                 lambdas, 
@@ -274,14 +286,17 @@ def trainer_ally(cfg: DictConfig) -> None:
                 return_labels=False,
                 dtype=dtype_pad_mask
             )
+            lambda_df = pd.DataFrame({'pred_lambda': lambdas, 'idx': idx_order})
+            print(lambda_df.describe())
+            lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
+
             dataloader = accelerator.prepare(dataloader)
 
             print("Dataloader updated.")
 
         for global_id, x, y, pad_mask in dataloader:
             # Keep the indices of traning samples
-            global_id = global_id.detach().cpu()
-            global_id = np.array(global_id)
+            global_id = np.array(global_id.cpu())
 
             # Increment the number of batches
             metrics["local_num_batches"] += 1
@@ -299,9 +314,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 with accelerator.no_sync(model):
                     # Forward pass
                     logits = model(x, pad_mask).logits
-                    valid_pos = (y != -100)
+                    valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 is for unmasked)
                     train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
-                    train_loss_seq = (train_loss_token.view(logits.shape[0], logits.shape[1]) * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
+                    train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
+
+                    train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1).clamp(min=1)
+                    # train_loss_seq = torch.stack([x[x!=0].mean() for x in train_loss_token * valid_pos]) 
                     train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
 
                     # Log metrics
@@ -317,7 +335,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     accelerator.backward(lagrangian)
 
                     # Update dual variables for constrained learning
-                    lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
+                    lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy, dtype=dtype_pad_mask)
 
                     lambdas[global_id] = lambdas_updated.detach().cpu()
                     slacks[global_id] = slacks_updated.detach().cpu() 
@@ -331,7 +349,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                 logits = model(x, pad_mask).logits # x, mask: [batch_size, max_len]
                 valid_pos = (y != -100)
                 train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
-                train_loss_seq = (train_loss_token.view(logits.shape[0], logits.shape[1]) * valid_pos).sum(dim=1) / valid_pos.sum(dim=1) # [batch_size, max_len]
+                train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
+
+                train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1).clamp(min=1)
+                # train_loss_seq = torch.stack([x[x!=0].mean() for x in train_loss_token * valid_pos])                
                 train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
 
                 # Log metrics
@@ -389,7 +410,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 scheduler.step()
 
                 # Update dual variables for constrained learning
-                lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
+                lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy, dtype=dtype_pad_mask)
                 lambdas[global_id] = lambdas_updated.detach().cpu()
                 slacks[global_id] = slacks_updated.detach().cpu() 
 

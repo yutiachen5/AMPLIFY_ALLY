@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import numpy as np
 from copy import deepcopy
@@ -55,6 +56,11 @@ class LambdaNetTrainer:
         self.optimizer = optimizer
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
+        self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
+        self.dtype = dtype
+
+        flag = np.array(flag)
+        idx = np.array(idx)
 
         self.trained_idx = idx[flag[idx] >= 1]
         self.trained_emb = embeddings[flag[idx] >= 1].to(device=device, dtype=dtype)
@@ -126,10 +132,15 @@ class LambdaNetTrainer:
         print_every: int = 10,
         **kwargs,
     ) -> torch.nn.Module:
-
         X_train, X_val, y_train, y_val = train_test_split(
             self.trained_emb, self.trained_lambdas, test_size=val_size, random_state=seed
         )
+
+        scaler = MinMaxScaler()
+        y_train = scaler.fit_transform(y_train.reshape(-1, 1))
+        y_val = scaler.transform(y_val.reshape(-1, 1))
+        y_train = torch.tensor(y_train, dtype=self.dtype)
+        y_val = torch.tensor(y_val, dtype=self.dtype)
 
         loader_tr = DataLoader(
             LambdaSet(X_train, X_val, y_train, y_val, train=True),
@@ -150,6 +161,7 @@ class LambdaNetTrainer:
         for epoch in range(max_epochs):
             train_loss = self.train(loader_tr)
             val_loss = self.validate(loader_val)
+            self.scheduler.step(val_loss)
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -162,9 +174,13 @@ class LambdaNetTrainer:
                     flush=True,
                 )
 
+        if best_model is None:
+            print("Warning: Validation did not improve — keeping the last model.")
+            best_model = deepcopy(self.model)
         self.model = best_model
 
         pred_lambdas = self.predict()
+        pred_lambdas = scaler.inverse_transform(pred_lambdas.reshape(-1, 1)).flatten()
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
 

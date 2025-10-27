@@ -160,6 +160,10 @@ def update_dataloader(
     Returns:
         torch.utils.data.DataLoader
     """
+    if torch.isnan(embeddings).any():
+        print("⚠️ NaNs in embeddings before clustering")
+        embeddings = torch.nan_to_num(embeddings)
+
     clusters = []
     # idxs_within_quota, lambdas_within_quota = [], []
     # idxs_over_quota, lambdas_over_quota = [], []
@@ -234,8 +238,8 @@ def update_dataloader(
         dtype,
     )
     
-    return DataLoader(
-        InMemoryProteinDataset(paths.values()).update(idx_order),
+    return updated_idx_order, DataLoader(
+        InMemoryProteinDataset(paths.values()).update(updated_idx_order),
         batch_size=per_device_batch_size,
         shuffle=False,
         collate_fn=collator,
@@ -243,6 +247,7 @@ def update_dataloader(
         pin_memory=True,
         persistent_workers=True,
     )
+
 
 # go through by clusters
 # batch size = n_clusters = 128

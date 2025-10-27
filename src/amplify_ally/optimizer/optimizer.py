@@ -16,3 +16,5 @@ def get_optimizer(model: torch.nn.Module, **kwargs) -> torch.optim.Optimizer:
             return optim.Adam(model.parameters(), **kwargs)
         case "AdamW":
             return optim.AdamW(model.parameters(), **kwargs)
+        case "ally":
+            return optim.Adam(model.parameters(), lr=kwargs.pop("optimizer_lr"))

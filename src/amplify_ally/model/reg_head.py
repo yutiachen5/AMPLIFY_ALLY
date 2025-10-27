@@ -9,14 +9,17 @@ class LambdaNet(nn.Module):
         super(LambdaNet, self).__init__()
 
         self.layers = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 256),
+            nn.LeakyReLU(),
+
+            nn.Linear(256, 128),
             nn.LeakyReLU(),
 
             nn.Linear(128, 64),
             nn.LeakyReLU(),
 
             nn.Linear(64, 1),
-            nn.Softplus()  
+            nn.Softplus()  # for positive contraint
         )
 
     def forward(self, x):

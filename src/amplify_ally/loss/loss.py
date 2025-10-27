@@ -58,7 +58,7 @@ def get_loss(
         class_weights = Tensor(class_weights).to(device, dtype, non_blocking=True)
 
     if reduction == 'none':
-        return CrossEntropyLoss(weight=class_weights, reduction="none", label_smoothing=label_smoothing)
+        return CrossEntropyLoss(weight=class_weights, reduction="none", ignore_index=-100, label_smoothing=label_smoothing)
     else:
         return CrossEntropyLoss(weight=class_weights, reduction="mean", ignore_index=-100, label_smoothing=label_smoothing)
 
@@ -73,11 +73,14 @@ def get_lagrangian(
     alpha: float = 0.1,
     **kwargs,
 ) -> torch.Tensor:
+    lambdas_current = lambdas_current.to(device)
+    slacks_current = slacks_current.to(device)
 
-    lagrangian = (train_loss_seq*(1+lambdas_current.to(device)) - \
-                    lambdas_current.to(device)*(epsilon+slacks_current.to(device))).nanmean() + \
-                    0.5*alpha*torch.linalg.norm(slacks_current.to(device))**2
-    constraint_violations = (train_loss_seq - (epsilon+slacks_current.to(device))).nanmean().item() # usually 0 positive
+    lagrangian = (train_loss_seq*(1+lambdas_current) - \
+                    lambdas_current*(epsilon+slacks_current)).nanmean() + \
+                    0.5*alpha*torch.linalg.norm(slacks_current)**2
+
+    constraint_violations = (train_loss_seq - (epsilon+slacks_current)).nanmean().item() # usually 0 positive
 
     return lagrangian, constraint_violations
 
@@ -90,6 +93,7 @@ def update_dual_variables(
     dual_lr: float,
     slack_lr: float,
     alpha: float,
+    dtype: torch.dtype = torch.float32,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
 
@@ -97,11 +101,11 @@ def update_dual_variables(
     nan_mask = torch.isnan(train_loss_seq)
     nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
     
-    train_loss_seq[nan_idxs] = (epsilon + slacks_current[nan_idxs]).to(train_loss_seq.dtype)
+    train_loss_seq[nan_idxs] = (epsilon + slacks_current[nan_idxs]).to(dtype)
 
-    lambdas_tmp = lambdas_current
+    lambdas_prev = lambdas_current.clone()
     lambdas_current += dual_lr*(train_loss_seq-(epsilon+slacks_current))
-    slacks_current -= slack_lr*(0.5*alpha*slacks_current-lambdas_tmp) 
+    slacks_current -= slack_lr*(alpha*slacks_current-lambdas_prev) 
 
     lambdas_current.data.clamp_(min=0)
     slacks_current.data.clamp_(min=0)
