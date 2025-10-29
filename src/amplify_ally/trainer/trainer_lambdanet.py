@@ -8,6 +8,7 @@ import numpy as np
 from copy import deepcopy
 from accelerate import Accelerator
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 
 from ..dataset import LambdaSet, EmbDataset
 
@@ -58,6 +59,7 @@ class LambdaNetTrainer:
         self.per_device_batch_size = per_device_batch_size_lambdanet
         self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
         self.dtype = dtype
+        self.device = device
 
         flag = np.array(flag)
         idx = np.array(idx)
@@ -118,11 +120,15 @@ class LambdaNetTrainer:
     def reconstruct_lambdas(self, pred_lambdas: list[float]) -> np.ndarray:
         full_lambdas = np.zeros(len(self.trained_idx) + len(self.untrained_idx), dtype=float)
 
-        # Use true lambda to fill trained and pred lambda to fill untrained samples
-        full_lambdas[self.trained_idx] = self.trained_lambdas.float().cpu().numpy()
-        full_lambdas[self.untrained_idx] = self.lambda_pred
+        # the lambda vector used in the next rd of pre-training, without filling by pred_lambda
+        full_lambdas[self.trained_idx] = self.trained_lambdas
+        lambdas_next_rd = torch.tensor(full_lambdas) 
 
-        return torch.tensor(full_lambdas)
+        # the lambda vector used for ranking in updating dataloader, filling by pred_lambda
+        full_lambdas[self.untrained_idx] = self.lambda_pred
+        lambdas_clustering = torch.tensor(full_lambdas)
+
+        return lambdas_next_rd, lambdas_clustering
 
     def get_lambdas(
         self,
@@ -132,6 +138,7 @@ class LambdaNetTrainer:
         print_every: int = 10,
         **kwargs,
     ) -> torch.nn.Module:
+        self.trained_lambdas = self.trained_lambdas.cpu().numpy()
         X_train, X_val, y_train, y_val = train_test_split(
             self.trained_emb, self.trained_lambdas, test_size=val_size, random_state=seed
         )
@@ -139,8 +146,8 @@ class LambdaNetTrainer:
         scaler = MinMaxScaler()
         y_train = scaler.fit_transform(y_train.reshape(-1, 1))
         y_val = scaler.transform(y_val.reshape(-1, 1))
-        y_train = torch.tensor(y_train, dtype=self.dtype)
-        y_val = torch.tensor(y_val, dtype=self.dtype)
+        y_train = torch.tensor(y_train, dtype=self.dtype, device=self.device)
+        y_val = torch.tensor(y_val, dtype=self.dtype,  device=self.device)
 
         loader_tr = DataLoader(
             LambdaSet(X_train, X_val, y_train, y_val, train=True),

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=testing_lambdanet10
+#SBATCH --job-name=testing_lambdanet11
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1

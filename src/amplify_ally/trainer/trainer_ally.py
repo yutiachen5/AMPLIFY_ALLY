@@ -271,13 +271,16 @@ def trainer_ally(cfg: DictConfig) -> None:
                 dtype=dtype_pad_mask,
                 **cfg.strategy
             )
-            lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy)
+            lambdas_next_rd, lambdas_clustering = lambdanet_trainer.get_lambdas(**cfg.strategy)
+            lambda_df = pd.DataFrame({'lambda_next_rd': lambdas_next_rd, 'lambda_clust': lambdas_clustering})
+            print(lambda_df.describe())
+            lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
 
             # Update dataloder based on actual and predicted lambda
             idx_order, dataloader = update_dataloader(
                 embeddings, 
                 idx_order, 
-                lambdas, 
+                lambdas_clustering, 
                 **cfg.strategy, 
                 **cfg.tokenizer,
                 **cfg.dataset.train,
@@ -286,15 +289,15 @@ def trainer_ally(cfg: DictConfig) -> None:
                 return_labels=False,
                 dtype=dtype_pad_mask
             )
-            lambda_df = pd.DataFrame({'pred_lambda': lambdas, 'idx': idx_order})
-            print(lambda_df.describe())
-            lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
 
             dataloader = accelerator.prepare(dataloader)
+            lambdas = lambdas_next_rd
 
             print("Dataloader updated.")
 
         for global_id, x, y, pad_mask in dataloader:
+            if rd >= 1:
+                print('gid', global_id)
             # Keep the indices of traning samples
             global_id = np.array(global_id.cpu())
 
@@ -332,6 +335,16 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                     # Compute gradient
                     lagrangian, constraint_violations = get_lagrangian(accelerator.device, train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
+                    if rd >= 1:
+                        print({
+                            "rd before backward": rd,
+                            "batch0_lambda_min": float(lambdas_current.min()),
+                            "batch0_lambda_max": float(lambdas_current.max()),
+                            "batch0_lambda_mean": float(lambdas_current.mean()),
+                            "train_loss_seq_min": float(train_loss_seq.min()),
+                            "train_loss_seq_max": float(train_loss_seq.max()),
+                            "train_loss_seq_mean": float(train_loss_seq.mean()),
+                        })
                     accelerator.backward(lagrangian)
 
                     # Update dual variables for constrained learning
