@@ -2,16 +2,14 @@ import torch
 from torch.utils.data import DataLoader
 
 from ..tokenizer import ProteinTokenizer
-
-from .datasets import IterableProteinDataset, InMemoryProteinDataset
+from .datasets import InMemoryProteinDataset
 from .data_collator import DataCollatorMLM
 
 import math
+import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 
-from typing import List
-import numpy as np
-
+from typing import List, Callable
 from collections import defaultdict
 
 
@@ -117,35 +115,35 @@ def get_dataloader(
             for k, v in paths.items()
         }
 
-    
+def emb_dataloader(
+    dataset: torch.utils.data.Dataset, 
+    collator: Callable,
+    per_device_batch_size_emb: int,
+    num_workers: int,
+    **kwargs,
+) -> DataLoader:
+    return DataLoader(
+        dataset,
+        batch_size=per_device_batch_size_emb,
+        shuffle=False,
+        collate_fn=collator,
+        num_workers=num_workers,
+        prefetch_factor=2,
+        pin_memory=True,
+        persistent_workers=True,
+    )
+
 def update_dataloader(
+    dataset: torch.utils.data.Dataset,
+    collator: Callable,
     embeddings: torch.Tensor,
     idx_order: np.array,
     lambdas: torch.Tensor,
     n_clusters: int,
     seed: int,
-    vocab_path: str,
-    pad_token_id: int,
-    mask_token_id: int,
-    bos_token_id: int,
-    eos_token_id: int,
-    unk_token_id: int,
-    other_special_token_ids: list | None,
-    paths: dict,
-    max_length: int,
-    random_truncate: bool,
-    return_labels: bool,
-    num_workers: int,
+    per_device_batch_size_kmeans: int,
     per_device_batch_size: int,
-    samples_before_next_set: list | None = None,
-    mask_probability: int = 0,
-    span_probability: float = 0.0,
-    span_max: int = 0,
-    exclude_special_tokens_replacement: bool = False,
-    padding: str = "max_length",
-    pad_to_multiple_of: int = 8,
-    dtype: torch.dtype = torch.float32,
-    merge: bool = False,
+    num_workers: int,
     **kwargs,
 ) -> DataLoader:
     """Update the order of samples in the dataloader according to informativeness and diversity
@@ -156,50 +154,24 @@ def update_dataloader(
         idx_order (List). List of global ids for the training samples.
         n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
         seed (int): Random seed. Defaults to 0.
+        per_device_batch_size_kmeans (int): Batch size for each GPU when doing clustering.
         
     Returns:
         torch.utils.data.DataLoader
     """
-    if torch.isnan(embeddings).any():
-        print("⚠️ NaNs in embeddings before clustering")
-        embeddings = torch.nan_to_num(embeddings)
 
     clusters = []
-    # idxs_within_quota, lambdas_within_quota = [], []
-    # idxs_over_quota, lambdas_over_quota = [], []
 
     kmeans = MiniBatchKMeans(
         n_clusters=n_clusters, 
         random_state=seed, 
-        batch_size=per_device_batch_size, 
+        batch_size=per_device_batch_size_kmeans, 
         n_init='auto',
     )
 
     clusters = kmeans.fit_predict(embeddings.detach().to(torch.float32).cpu().numpy())
     sorted_triplets = sorted(zip(clusters, lambdas, idx_order), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
     sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
-
-    # for i, idx in enumerate(sorted_idxs):
-    #     cluster_id = sorted_clusters[i]
-    #     lambda_value = sorted_lambdas[i]
-
-    #     if space_in_cluster[cluster_id] > 0:
-    #         idxs_within_quota.append(idx)
-    #         lambdas_within_quota.append(lambda_value)
-    #         space_in_cluster[cluster_id] -= 1
-    #     else: 
-    #         idxs_over_quota.append(idx)
-    #         lambdas_over_quota.append(lambda_value)
-
-    # idx_order = idxs_within_quota + idxs_over_quota
-    # lambda_order = lambdas_within_quota + lambdas_over_quota
-
-    # updated_idx_order, updated_lambda = [], []
-    
-    # for i in range(math.ceil(len(lambdas)/n_clusters)): # 128 samples in a batch --> 128 cluster
-    #     for c in range(n_clusters):
-    #         updated_idx_order.append(sorted_idxs[i])
-    #         updated_lambda.append(sorted_lambdas[i])
 
     cluster_to_samples = defaultdict(list)
     for c, l, idx in zip(sorted_clusters, sorted_lambdas, sorted_idxs):
@@ -215,41 +187,16 @@ def update_dataloader(
                 updated_idx_order.append(idx)
                 updated_lambda.append(l)
 
-    tokenizer = ProteinTokenizer(
-        vocab_path,
-        pad_token_id,
-        mask_token_id,
-        bos_token_id,
-        eos_token_id,
-        unk_token_id,
-        other_special_token_ids,
-    )
-    collator = DataCollatorMLM(
-        tokenizer,
-        max_length,
-        random_truncate,
-        return_labels,
-        mask_probability,
-        span_probability,
-        span_max,
-        exclude_special_tokens_replacement,
-        padding,
-        pad_to_multiple_of,
-        dtype,
-    )
     
     return updated_idx_order, DataLoader(
-        InMemoryProteinDataset(paths.values()).update(updated_idx_order),
+        # InMemoryProteinDataset(paths.values()).update(updated_idx_order),
+        dataset=dataset.update(updated_idx_order),
         batch_size=per_device_batch_size,
         shuffle=False,
         collate_fn=collator,
         num_workers=num_workers,
+        prefetch_factor=2,
         pin_memory=True,
         persistent_workers=True,
     )
-
-
-# go through by clusters
-# batch size = n_clusters = 128
-
 

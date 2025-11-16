@@ -76,11 +76,14 @@ def get_lagrangian(
     lambdas_current = lambdas_current.to(device)
     slacks_current = slacks_current.to(device)
 
-    lagrangian = (train_loss_seq*(1+lambdas_current) - \
-                    lambdas_current*(epsilon+slacks_current)).nanmean() + \
-                    0.5*alpha*torch.linalg.norm(slacks_current)**2
+    # lagrangian = (train_loss_seq*(1+lambdas_current) - \
+    #                 lambdas_current*(epsilon+slacks_current)).nanmean() + \
+    #                 0.5*alpha*torch.linalg.norm(slacks_current)**2
 
-    constraint_violations = (train_loss_seq - (epsilon+slacks_current)).nanmean().item() # usually 0 positive
+    # constraint_violations = (train_loss_seq - (epsilon+slacks_current)).nanmean().item() # usually 0 positive
+
+    lagrangian = (train_loss_seq*(1+lambdas_current) - lambdas_current*(epsilon)).nanmean() 
+    constraint_violations = (train_loss_seq - (epsilon)).nanmean().item() # usually 0 positive
 
     return lagrangian, constraint_violations
 
@@ -101,11 +104,14 @@ def update_dual_variables(
     nan_mask = torch.isnan(train_loss_seq)
     nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
     
-    train_loss_seq[nan_idxs] = (epsilon + slacks_current[nan_idxs]).to(dtype)
+    # train_loss_seq[nan_idxs] = (epsilon + slacks_current[nan_idxs]).to(torch.float32)
+    train_loss_seq[nan_idxs] = epsilon
 
     lambdas_prev = lambdas_current.clone()
-    lambdas_current += dual_lr*(train_loss_seq-(epsilon+slacks_current))
-    slacks_current -= slack_lr*(alpha*slacks_current-lambdas_prev) 
+    # lambdas_current += dual_lr*(train_loss_seq-(epsilon+slacks_current))
+    lambdas_current += dual_lr*(train_loss_seq-epsilon)
+
+    # slacks_current -= slack_lr*(alpha*slacks_current-lambdas_prev) 
 
     lambdas_current.data.clamp_(min=0)
     slacks_current.data.clamp_(min=0)

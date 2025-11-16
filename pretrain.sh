@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=testing_lambdanet11
+#SBATCH --job-name=ALLY_nsamples.30M_niter.3_nsteps.10k_noslack_nclusters.1_e.2.1
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -12,7 +12,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=128G                      # memory per node
+#SBATCH --mem=200G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -40,14 +40,14 @@ srun \
 	--ntasks-per-node=1 \
 	/bin/bash -c "\
 	/hpc/group/naderilab/eleanor/env/bin/accelerate launch \
-	--config_file=conf/accelerate_deepspeed_zero3.yaml \
+	--config_file=conf/accelerate_gpu.yaml \
 	--machine_rank=$SLURM_NODEID \
 	--num_cpu_threads_per_process=$SLURM_CPUS_PER_GPU \
 	--main_process_ip=$MASTER_ADDR \
 	--main_process_port=$MASTER_PORT \
 	--num_processes=$(($SLURM_JOB_NUM_NODES * $SLURM_GPUS_ON_NODE)) \
 	--num_machines=$SLURM_JOB_NUM_NODES \
-	--mixed_precision=no \
+	--mixed_precision=bf16 \
 	--gradient_clipping=1.0 \
 	/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/scripts/pretrain.py \
 	hydra.run.dir=logs/$SLURM_JOB_NAME \
@@ -65,5 +65,10 @@ srun \
 	scheduler.final_step=900000 \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
-	trainer.gradient_accumulation_steps=2
+	trainer.gradient_accumulation_steps=2 \
+	strategy.n_steps=10000 \
+	strategy.slack_lr=1e-3 \
+	strategy.n_iters=3 \
+	strategy.n_clusters=1 \
+	strategy.epsilon=2.1
 "

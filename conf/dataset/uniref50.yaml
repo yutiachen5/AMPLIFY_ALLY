@@ -1,6 +1,6 @@
 train:
   samples_before_next_set: null
-  paths: {uniref50: uniref/mila/uniref50_train_0.1_filtered.csv}
+  paths: {uniref50: uniref/mila/uniref50_train_0.5.csv}
 
 
 validation:

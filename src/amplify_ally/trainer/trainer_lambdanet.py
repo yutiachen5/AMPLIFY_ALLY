@@ -65,17 +65,18 @@ class LambdaNetTrainer:
         idx = np.array(idx)
 
         self.trained_idx = idx[flag[idx] >= 1]
-        self.trained_emb = embeddings[flag[idx] >= 1].to(device=device, dtype=dtype)
-        self.trained_lambdas = lambdas[flag[idx] >= 1].to(device=device, dtype=dtype)
+        self.trained_emb = embeddings[flag[idx] >= 1]#.to(device=device, dtype=dtype)
+        self.trained_lambdas = lambdas[flag[idx] >= 1]#.to(device=device, dtype=dtype)
 
         self.untrained_idx = idx[flag[idx] < 1]
-        self.untrained_emb = embeddings[flag[idx] < 1].to(device=device, dtype=dtype)
+        self.untrained_emb = embeddings[flag[idx] < 1]#.to(device=device, dtype=dtype)
 
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
         total_loss = 0.0
 
         for x, y in dataloader:
+            x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
             self.optimizer.zero_grad()
             out = self.model(x)
             loss = F.mse_loss(out.squeeze(), y.squeeze())
@@ -91,6 +92,7 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x, y in dataloader:
+                x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
                 out = self.model(x)
                 loss = F.mse_loss(out.squeeze(), y.squeeze())
                 total_loss += loss.item()
@@ -110,6 +112,7 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x in loader_te:
+                x = x.to(device=self.device, dtype=self.dtype)
                 out = self.model(x)
                 lambda_pred += out.squeeze().cpu().tolist()
 
