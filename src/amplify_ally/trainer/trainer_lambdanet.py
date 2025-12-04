@@ -61,26 +61,33 @@ class LambdaNetTrainer:
         self.dtype = dtype
         self.device = device
 
-        flag = np.array(flag)
-        idx = np.array(idx)
+        # flag = np.array(flag)
+        # idx = np.array(idx)
 
         self.trained_idx = idx[flag[idx] >= 1]
-        self.trained_emb = embeddings[flag[idx] >= 1]#.to(device=device, dtype=dtype)
-        self.trained_lambdas = lambdas[flag[idx] >= 1]#.to(device=device, dtype=dtype)
+        self.trained_emb = embeddings[flag[idx] >= 1]
+        self.trained_lambdas = lambdas[flag[idx] >= 1]
 
         self.untrained_idx = idx[flag[idx] < 1]
-        self.untrained_emb = embeddings[flag[idx] < 1]#.to(device=device, dtype=dtype)
+        self.untrained_emb = embeddings[flag[idx] < 1]
+
+        self.trained_lambdas = self.trained_lambdas.to(device=self.device, dtype=self.dtype)
+        self.trained_emb = self.trained_emb.to(device=self.device, dtype=self.dtype)
+        self.untrained_emb = self.untrained_emb.to(device=self.device, dtype=self.dtype)
+
+        del embeddings
 
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
         total_loss = 0.0
 
         for x, y in dataloader:
-            x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
+            # x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
             self.optimizer.zero_grad()
             out = self.model(x)
             loss = F.mse_loss(out.squeeze(), y.squeeze())
-            self.accelerator.backward(loss)
+            # self.accelerator.backward(loss), disable accelerator at this time, single gpu only
+            loss.backward()
             total_loss += loss.item()
             self.optimizer.step()
 
@@ -92,46 +99,32 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x, y in dataloader:
-                x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
+                # x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
                 out = self.model(x)
                 loss = F.mse_loss(out.squeeze(), y.squeeze())
                 total_loss += loss.item()
 
         return total_loss / len(dataloader)
 
-    def predict(self) -> tuple[list[int], list[float]]:
-        loader_te = DataLoader(
-            EmbDataset(self.untrained_emb), 
-            batch_size=self.per_device_batch_size,
-            shuffle=False,
-            drop_last=False
-        )
-
+    def predict(self, dataloader: DataLoader) -> torch.Tensor:
         self.model.eval()
         lambda_pred = []
 
         with torch.no_grad():
-            for x in loader_te:
-                x = x.to(device=self.device, dtype=self.dtype)
+            for x in dataloader:
+                # x = x.to(device=self.device, dtype=self.dtype)
                 out = self.model(x)
                 lambda_pred += out.squeeze().cpu().tolist()
-
-        self.lambda_pred = np.array(lambda_pred)
         
-        return self.lambda_pred
+        return torch.tensor(lambda_pred, dtype=torch.float32, device=self.device) # float32 for scale transformation
 
-    def reconstruct_lambdas(self, pred_lambdas: list[float]) -> np.ndarray:
+    def reconstruct_lambdas(self, pred_lambdas: np.ndarray) -> torch.Tensor:
         full_lambdas = np.zeros(len(self.trained_idx) + len(self.untrained_idx), dtype=float)
 
-        # the lambda vector used in the next rd of pre-training, without filling by pred_lambda
-        full_lambdas[self.trained_idx] = self.trained_lambdas
-        lambdas_next_rd = torch.tensor(full_lambdas) 
+        full_lambdas[self.trained_idx] = self.trained_lambdas.detach().to(torch.float32).cpu().numpy()
+        full_lambdas[self.untrained_idx] = pred_lambdas
 
-        # the lambda vector used for ranking in updating dataloader, filling by pred_lambda
-        full_lambdas[self.untrained_idx] = self.lambda_pred
-        lambdas_clustering = torch.tensor(full_lambdas)
-
-        return lambdas_next_rd, lambdas_clustering
+        return torch.tensor(full_lambdas, dtype=torch.float32)
 
     def get_lambdas(
         self,
@@ -140,17 +133,37 @@ class LambdaNetTrainer:
         max_epochs: int = 100,
         print_every: int = 10,
         **kwargs,
-    ) -> torch.nn.Module:
-        self.trained_lambdas = self.trained_lambdas.cpu().numpy()
-        X_train, X_val, y_train, y_val = train_test_split(
-            self.trained_emb, self.trained_lambdas, test_size=val_size, random_state=seed
-        )
+    ) -> torch.Tensor:
+        n = self.trained_emb.shape[0]
+        n_val = int(val_size * n)
 
-        scaler = MinMaxScaler()
-        y_train = scaler.fit_transform(y_train.reshape(-1, 1))
-        y_val = scaler.transform(y_val.reshape(-1, 1))
-        y_train = torch.tensor(y_train, dtype=self.dtype, device=self.device)
-        y_val = torch.tensor(y_val, dtype=self.dtype,  device=self.device)
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        perm = torch.randperm(n, generator=g)
+        val_idx = perm[:n_val]
+        train_idx = perm[n_val:]
+
+        X_train = self.trained_emb[train_idx]
+        X_val   = self.trained_emb[val_idx]
+        y_train = self.trained_lambdas[train_idx]
+        y_val   = self.trained_lambdas[val_idx]
+
+        # self.trained_lambdas = self.trained_lambdas.cpu().numpy()
+        # X_train, X_val, y_train, y_val = train_test_split(
+        #     self.trained_emb, self.trained_lambdas, test_size=val_size, random_state=seed
+        # )
+
+        # min-max scaler
+        y_min, y_max = y_train.min(), y_train.max()
+        scale = (y_max - y_min).clamp_min(1e-12)
+
+        y_train = ((y_train - y_min)/scale).view(-1, 1)
+        y_val = ((y_val - y_min)/scale).view(-1, 1)
+
+        # scaler = MinMaxScaler()
+        # y_train = scaler.fit_transform(y_train.reshape(-1, 1))
+        # y_val = scaler.transform(y_val.reshape(-1, 1))
+        # y_train = torch.tensor(y_train, dtype=self.dtype, device=self.device)
+        # y_val = torch.tensor(y_val, dtype=self.dtype,  device=self.device)
 
         loader_tr = DataLoader(
             LambdaSet(X_train, X_val, y_train, y_val, train=True),
@@ -164,8 +177,14 @@ class LambdaNetTrainer:
             shuffle=True,
             drop_last=True,
         )
+        loader_te = DataLoader(
+            EmbDataset(self.untrained_emb), 
+            batch_size=self.per_device_batch_size,
+            shuffle=False,
+            drop_last=False
+        )
 
-        best_model = None
+        best_state = None
         best_val_loss = float("inf")
 
         for epoch in range(max_epochs):
@@ -176,23 +195,28 @@ class LambdaNetTrainer:
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 # Keep the best model based on val loss
-                best_model = deepcopy(self.model)
+                best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
 
             if epoch % print_every == 0:
                 print(
                     f"[Epoch {epoch:03d}] Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}",
                     flush=True,
                 )
+        print("Lambda training completed.")
 
-        if best_model is None:
+        if best_state is None:
             print("Warning: Validation did not improve — keeping the last model.")
-            best_model = deepcopy(self.model)
-        self.model = best_model
+        else:
+            self.model.load_state_dict(best_state)
 
-        pred_lambdas = self.predict()
-        pred_lambdas = scaler.inverse_transform(pred_lambdas.reshape(-1, 1)).flatten()
+        pred_lambdas = self.predict(loader_te)
+        pred_lambdas = (pred_lambdas * scale + y_min).detach().cpu().numpy()
+        # pred_lambdas = pred_lambdas.detach().cpu().numpy()
+        # pred_lambdas = scaler.inverse_transform(pred_lambdas.reshape(-1, 1)).flatten()
+        print("Lambda prediction completed.")
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
+        print("Lambda updating completed.")
 
         return full_lambdas
 

@@ -1,9 +1,11 @@
 import os
 import re
 import sys
+import pytz
 import torch
 import signal
 import shutil
+import datetime 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -21,53 +23,9 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_dataloader, update_dataloader, emb_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
+from ..inference import get_embedding, pooling
 from .trainer_lambdanet import LambdaNetTrainer
 
-import datetime 
-
-
-def get_embedding(
-    model: torch.nn.Module,
-    dataloader: torch.utils.data.DataLoader,
-    device: torch.device,
-) -> torch.Tensor:
-    """Get the embeddings after each round
-
-    Args:
-        model (torch.nn.Module): Model.
-        dataloader (torch.utils.data.DataLoader): Dataloader.
-
-    Returns:
-       torch.Tensor: embedding of each sample in the training dataloader
-    """
-
-    pbar = tqdm(
-        desc="Extract embeddings",
-        unit="batch",
-        initial=0,
-        total=len(dataloader),
-    )
-
-    model.eval()
-    embedding = []
-
-    with torch.no_grad():
-        for global_id, x, y, pad_mask in dataloader:
-            emb = model(x, pad_mask, output_hidden_states=True).hidden_states[-1]
-
-            # Mean pooling to get the seq-level representation. 0: valid, inf: false
-            pooling_indicator = torch.isfinite(pad_mask).to(torch.float32)
-            valid_counts = torch.sum(pooling_indicator, dim=1, keepdim=True)
-            pooled_emb = torch.sum(emb*pooling_indicator.unsqueeze(-1), dim=1)/valid_counts # [batch_size, emb_dim], seq-level embeddings
-            pooled_emb = pooled_emb.detach().cpu()
-            embedding.append(pooled_emb)
-
-            pbar.update(1)
-        embedding = torch.cat(embedding, dim=0) 
-    model.train()
-    pbar.close()
-
-    return embedding
 
 def evaluate(
     model: torch.nn.Module,
@@ -210,7 +168,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize parameters for constrained learning
     dataset = train_dataloader.dataset
-    lambdas = torch.zeros(len(dataset), requires_grad=False)
+    lambdas = torch.zeros(len(dataset), requires_grad=False) # float32
     slacks = torch.zeros(len(dataset), requires_grad=False)
     flag = np.zeros(len(dataset))
     idx_order = np.arange(len(dataset))
@@ -244,16 +202,19 @@ def trainer_ally(cfg: DictConfig) -> None:
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
+    # Generate emb for the whole training set using the initial model
+    embeddings = get_embedding(
+        model, 
+        accelerator.prepare(emb_dataloader(dataset, collator, **cfg.strategy, **cfg.trainer.train)), 
+        accelerator.device,
+    )
+
     for rd in range(cfg.strategy.max_rds): # fixed number of rounds
         if rd > 0:
             # Rebuild train data loader according to the order of informativeness and diversity
-            embeddings = get_embedding(
-                model, 
-                accelerator.prepare(emb_dataloader(dataset, collator, **cfg.strategy, **cfg.trainer.train)), 
-                accelerator.device,
-            )
 
-            now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            # now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            now = datetime.datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y-%m-%d-%H-%M-%S")
             save_dir = f"/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/outputs/{now}/"
             os.makedirs(save_dir, exist_ok=True)
             np.save(os.path.join(save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
@@ -274,10 +235,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 dtype=dtype_pad_mask,
                 **cfg.strategy
             )
-            lambdas_next_rd, lambdas_clustering = lambdanet_trainer.get_lambdas(**cfg.strategy)
-            lambda_df = pd.DataFrame({'lambda_next_rd': lambdas_next_rd, 'lambda_clust': lambdas_clustering})
-            print(lambda_df.describe())
-            lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
+
+            # Update lambda value for the next rd
+            lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy)
+            # lambda_df = pd.DataFrame({'lambda_pred': lambdas})
+            # print(lambda_df.describe())
+            # lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
 
             # Update dataloder based on actual and predicted lambda
             idx_order, dataloader = update_dataloader(
@@ -285,18 +248,17 @@ def trainer_ally(cfg: DictConfig) -> None:
                 collator=collator,
                 embeddings=embeddings, 
                 idx_order=idx_order, 
-                lambdas=lambdas_clustering, 
+                lambdas=lambdas, 
                 **cfg.strategy, 
                 **cfg.trainer.train,
             )
 
             dataloader = accelerator.prepare_data_loader(dataloader)
-            lambdas = lambdas_clustering
 
             print("Dataloader updated.")
-            del embeddings
 
-        for _ in range(cfg.strategy.n_iters): # train the samples n_steps * 3 times in each rd (nsteps is gradient acc steps!!!)
+        for it in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
+            print("Iteration: ", it+1)
             for global_id, x, y, pad_mask in dataloader:
                 # Keep the indices of traning samples
                 global_id = np.array(global_id.cpu())
@@ -316,7 +278,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
                     with accelerator.no_sync(model):
                         # Forward pass
-                        logits = model(x, pad_mask).logits
+                        out = model(x, pad_mask, output_hidden_states=True)
+                        logits = out.logits
+
+                        if it == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
+                            embeddings[global_id] = pooling(out.hidden_states[-1], pad_mask, **cfg.strategy)
+
                         valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 is for unmasked)
                         train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
                         train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
@@ -348,7 +315,12 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 else:
                     # Forward pass
-                    logits = model(x, pad_mask).logits # x, mask: [batch_size, max_len]
+                    out = model(x, pad_mask, output_hidden_states=True) # x, mask: [batch_size, max_len]
+                    logits = out.logits
+
+                    if it == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
+                        embeddings[global_id] = pooling(out.hidden_states[-1], pad_mask, **cfg.strategy)
+
                     valid_pos = (y != -100)
                     train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
                     train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]

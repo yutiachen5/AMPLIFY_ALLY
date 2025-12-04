@@ -5,6 +5,7 @@ from ..tokenizer import ProteinTokenizer
 from .datasets import InMemoryProteinDataset
 from .data_collator import DataCollatorMLM
 
+import gc
 import math
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
@@ -170,14 +171,20 @@ def update_dataloader(
     )
 
     clusters = kmeans.fit_predict(embeddings.detach().to(torch.float32).cpu().numpy())
+    print("Kmeans clustering completed.")
+    del embeddings
+    
     sorted_triplets = sorted(zip(clusters, lambdas, idx_order), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
     sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
+    del clusters, sorted_triplets
 
     cluster_to_samples = defaultdict(list)
     for c, l, idx in zip(sorted_clusters, sorted_lambdas, sorted_idxs):
         cluster_to_samples[c].append((l, idx))
+    del sorted_clusters, sorted_lambdas, sorted_idxs
+    gc.collect()
 
-    updated_idx_order, updated_lambda = [], []
+    updated_idx_order = []
     max_len = max(len(v) for v in cluster_to_samples.values())
 
     for i in range(max_len):                
@@ -185,11 +192,12 @@ def update_dataloader(
             if i < len(cluster_to_samples[c]):   # skip if cluster shorter
                 l, idx = cluster_to_samples[c][i]
                 updated_idx_order.append(idx)
-                updated_lambda.append(l)
-
+    updated_idx_order = np.array(updated_idx_order)
+    
+    del cluster_to_samples
+    gc.collect()
     
     return updated_idx_order, DataLoader(
-        # InMemoryProteinDataset(paths.values()).update(updated_idx_order),
         dataset=dataset.update(updated_idx_order),
         batch_size=per_device_batch_size,
         shuffle=False,

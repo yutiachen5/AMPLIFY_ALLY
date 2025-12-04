@@ -1,18 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.30M_niter.3_nsteps.10k_noslack_nclusters.1_e.2.1
+#SBATCH --job-name=ALLY_nsamples.30M_niter.10_nsteps.2k_noslack_nclusters.2048_e.2.1
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
 #SBATCH --exclude=dcc-h200-gpu-[07,08]
+#SBATCH --time=72:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
-#SBATCH --time=0-12:00                  # 12 hours
 #SBATCH --nodes=1                       # number of nodes
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=200G                      # memory per node
+#SBATCH --mem=220G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -66,9 +66,9 @@ srun \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
-	strategy.n_steps=10000 \
+	strategy.n_steps=2000 \
 	strategy.slack_lr=1e-3 \
-	strategy.n_iters=3 \
-	strategy.n_clusters=1 \
+	strategy.n_iters=10 \
+	strategy.n_clusters=2048 \
 	strategy.epsilon=2.1
 "
