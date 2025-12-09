@@ -68,19 +68,13 @@ def get_lagrangian(
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
     slacks_current: torch.Tensor,
-    dual_lr: float = 0.1,
+    lr_dual: float = 0.1,
     epsilon: float = 2.4,
     alpha: float = 0.1,
     **kwargs,
 ) -> torch.Tensor:
     lambdas_current = lambdas_current.to(device)
     slacks_current = slacks_current.to(device)
-
-    # lagrangian = (train_loss_seq*(1+lambdas_current) - \
-    #                 lambdas_current*(epsilon+slacks_current)).nanmean() + \
-    #                 0.5*alpha*torch.linalg.norm(slacks_current)**2
-
-    # constraint_violations = (train_loss_seq - (epsilon+slacks_current)).nanmean().item() # usually 0 positive
 
     lagrangian = (train_loss_seq*(1+lambdas_current) - lambdas_current*(epsilon)).nanmean() 
     constraint_violations = (train_loss_seq - (epsilon)).nanmean().item() # usually 0 positive
@@ -92,11 +86,11 @@ def update_dual_variables(
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
     slacks_current: torch.Tensor,
-    epsilon: float,
-    dual_lr: float,
-    slack_lr: float,
-    alpha: float,
+    lr_dual: float = 0.1,
     dtype: torch.dtype = torch.float32,
+    epsilon: float = 2.4,
+    slack_lr: float = 0.01,
+    alpha: float = 0.1,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
 
@@ -108,8 +102,8 @@ def update_dual_variables(
     train_loss_seq[nan_idxs] = epsilon
 
     lambdas_prev = lambdas_current.clone()
-    # lambdas_current += dual_lr*(train_loss_seq-(epsilon+slacks_current))
-    lambdas_current += dual_lr*(train_loss_seq-epsilon)
+    # lambdas_current += lr_dual*(train_loss_seq-(epsilon+slacks_current))
+    lambdas_current += lr_dual*(train_loss_seq-epsilon)
 
     # slacks_current -= slack_lr*(alpha*slacks_current-lambdas_prev) 
 

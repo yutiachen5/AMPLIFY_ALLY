@@ -209,18 +209,21 @@ def trainer_ally(cfg: DictConfig) -> None:
         accelerator.device,
     )
 
+    dual_lr = cfg.strategy.dual_lr
+
     for rd in range(cfg.strategy.max_rds): # fixed number of rounds
+        print(f"#### Round {rd} ####")
         if rd > 0:
             # Rebuild train data loader according to the order of informativeness and diversity
 
-            # now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-            now = datetime.datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y-%m-%d-%H-%M-%S")
-            save_dir = f"/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/outputs/{now}/"
-            os.makedirs(save_dir, exist_ok=True)
-            np.save(os.path.join(save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
+            # save data for sanity check
+            # now = datetime.datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y-%m-%d-%H-%M-%S")
+            # save_dir = f"/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/outputs/{now}/"
+            # os.makedirs(save_dir, exist_ok=True)
+            # np.save(os.path.join(save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
 
-            save_df = pd.DataFrame({"idx":idx_order, "flag": flag, "lambdas": lambdas})
-            save_df.to_csv(os.path.join(save_dir, "lambdas.csv"), index=False)
+            # save_df = pd.DataFrame({"idx":idx_order, "flag": flag, "lambdas": lambdas})
+            # save_df.to_csv(os.path.join(save_dir, "lambdas.csv"), index=False)
 
             # Train lambdanet using samples which were seen by the model
             lambdanet_trainer = LambdaNetTrainer(
@@ -299,12 +302,45 @@ def trainer_ally(cfg: DictConfig) -> None:
                         metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                         metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
-                        # Compute gradient
-                        lagrangian, constraint_violations = get_lagrangian(accelerator.device, train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
-                        accelerator.backward(lagrangian)
+                        # Compute gradient and update dual variables
+                        if cfg.strategy.swap:
+                            lambdas_updated, slacks_updated = update_dual_variables(
+                                train_loss_seq=train_loss_seq,
+                                lambdas_current=lambdas_current,
+                                slacks_current=slacks_current,
+                                lr_dual=dual_lr,
+                                dtype=dtype_pad_mask,
+                                **cfg.strategy, 
+                            )
 
-                        # Update dual variables for constrained learning
-                        lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy, dtype=dtype_pad_mask)
+                            lagrangian, constraint_violations = get_lagrangian(
+                                device=accelerator.device, 
+                                train_loss_seq=train_loss_seq, 
+                                lambdas_current=lambdas_current, 
+                                slacks_current=slacks_current, 
+                                lr_dual=dual_lr, 
+                                **cfg.strategy
+                            )
+                            accelerator.backward(lagrangian)
+                        else:
+                            lagrangian, constraint_violations = get_lagrangian(
+                                device=accelerator.device, 
+                                train_loss_seq=train_loss_seq, 
+                                lambdas_current=lambdas_current, 
+                                slacks_current=slacks_current, 
+                                lr_dual=dual_lr, 
+                                **cfg.strategy
+                            )
+                            accelerator.backward(lagrangian)
+
+                            lambdas_updated, slacks_updated = update_dual_variables(
+                                train_loss_seq=train_loss_seq,
+                                lambdas_current=lambdas_current,
+                                slacks_current=slacks_current,
+                                lr_dual=dual_lr,
+                                dtype=dtype_pad_mask,
+                                **cfg.strategy, 
+                            )
 
                         lambdas[global_id] = lambdas_updated.detach().cpu()
                         slacks[global_id] = slacks_updated.detach().cpu() 
@@ -338,9 +374,48 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
-                    # Compute gradient
-                    lagrangian, constraint_violations = get_lagrangian(accelerator.device, train_loss_seq, lambdas_current, slacks_current, **cfg.strategy)
-                    accelerator.backward(lagrangian)
+                    # Compute gradient and update dual variables
+                    if cfg.strategy.swap:
+                        lambdas_updated, slacks_updated = update_dual_variables(
+                            train_loss_seq=train_loss_seq,
+                            lambdas_current=lambdas_current,
+                            slacks_current=slacks_current,
+                            lr_dual=dual_lr,
+                            dtype=dtype_pad_mask,
+                            **cfg.strategy, 
+                        )
+
+                        lagrangian, constraint_violations = get_lagrangian(
+                            device=accelerator.device, 
+                            train_loss_seq=train_loss_seq, 
+                            lambdas_current=lambdas_current, 
+                            slacks_current=slacks_current, 
+                            lr_dual=dual_lr, 
+                            **cfg.strategy
+                        )
+                        accelerator.backward(lagrangian)
+                    else:
+                        lagrangian, constraint_violations = get_lagrangian(
+                            device=accelerator.device, 
+                            train_loss_seq=train_loss_seq, 
+                            lambdas_current=lambdas_current, 
+                            slacks_current=slacks_current, 
+                            lr_dual=dual_lr, 
+                            **cfg.strategy
+                        )
+                        accelerator.backward(lagrangian)
+                        
+                        lambdas_updated, slacks_updated = update_dual_variables(
+                            train_loss_seq=train_loss_seq,
+                            lambdas_current=lambdas_current,
+                            slacks_current=slacks_current,
+                            lr_dual=dual_lr,
+                            dtype=dtype_pad_mask,
+                            **cfg.strategy, 
+                        )
+
+                    lambdas[global_id] = lambdas_updated.detach().cpu()
+                    slacks[global_id] = slacks_updated.detach().cpu() 
 
                     metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
                     metrics["slack_mean"] = slacks[flag >= 1].mean().item()
@@ -382,10 +457,9 @@ def trainer_ally(cfg: DictConfig) -> None:
                     optimizer.step()
                     scheduler.step()
 
-                    # Update dual variables for constrained learning
-                    lambdas_updated, slacks_updated = update_dual_variables(train_loss_seq, lambdas_current, slacks_current, **cfg.strategy, dtype=dtype_pad_mask)
-                    lambdas[global_id] = lambdas_updated.detach().cpu()
-                    slacks[global_id] = slacks_updated.detach().cpu() 
+                    # Adjust the dual learning rate every x steps
+                    if metrics["num_steps"] % cfg.strategy.dual_lr_stepsize == 0:
+                        dual_lr *= cfg.strategy.dual_lr_gamma
 
                     # Reset the gradient
                     optimizer.zero_grad()
@@ -397,6 +471,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break
 
+        dual_lr = cfg.strategy.dual_lr
 
         # Log metrics
         metrics["num_epochs"] += 1

@@ -1,16 +1,18 @@
 _name_: ally
 
+# basic setting
 seed: 1357
 max_rds: 5
 epsilon: 2.25
 dual_lr: 0.1
-dual_lr_gamma: 0.5
+dual_lr_gamma: 0.9
 dual_lr_stepsize: 500
 alpha: 0.01
 slack_lr: 0.01
 n_clusters: 128
 n_steps: 8000
 n_iters: 4
+swap: False
 
 # lambdanet training
 val_size: 0.2 
