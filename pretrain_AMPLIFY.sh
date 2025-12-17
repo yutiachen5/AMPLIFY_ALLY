@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.3M_niter.5_nsteps.2k_noslack_nclusters.1024_e.2.1_swap_dualstep.500_dualgamma.0.9
+#SBATCH --job-name=testing_unconstrained_uniref50_nsteps.2k_niter.20_nowarmup
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -67,8 +67,8 @@ srun \
 	trainer.gradient_accumulation_steps=2 \
 	strategy.n_steps=2000 \
 	strategy.slack_lr=1e-3 \
-	strategy.n_iters=5 \
-	strategy.n_clusters=1024 \
-	strategy.epsilon=2.1 \
-	strategy.swap=True
+	strategy.n_iters=20 \
+	strategy.n_clusters=2048 \
+	strategy.epsilon=1000 \
+	strategy.swap=False
 "

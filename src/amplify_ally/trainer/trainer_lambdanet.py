@@ -61,9 +61,6 @@ class LambdaNetTrainer:
         self.dtype = dtype
         self.device = device
 
-        # flag = np.array(flag)
-        # idx = np.array(idx)
-
         self.trained_idx = idx[flag[idx] >= 1]
         self.trained_emb = embeddings[flag[idx] >= 1]
         self.trained_lambdas = lambdas[flag[idx] >= 1]
@@ -82,7 +79,6 @@ class LambdaNetTrainer:
         total_loss = 0.0
 
         for x, y in dataloader:
-            # x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
             self.optimizer.zero_grad()
             out = self.model(x)
             loss = F.mse_loss(out.squeeze(), y.squeeze())
@@ -99,7 +95,6 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x, y in dataloader:
-                # x, y = x.to(device=self.device, dtype=self.dtype), y.to(device=self.device, dtype=self.dtype)
                 out = self.model(x)
                 loss = F.mse_loss(out.squeeze(), y.squeeze())
                 total_loss += loss.item()
@@ -112,7 +107,6 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x in dataloader:
-                # x = x.to(device=self.device, dtype=self.dtype)
                 out = self.model(x)
                 lambda_pred += out.squeeze().cpu().tolist()
         
@@ -147,23 +141,12 @@ class LambdaNetTrainer:
         y_train = self.trained_lambdas[train_idx]
         y_val   = self.trained_lambdas[val_idx]
 
-        # self.trained_lambdas = self.trained_lambdas.cpu().numpy()
-        # X_train, X_val, y_train, y_val = train_test_split(
-        #     self.trained_emb, self.trained_lambdas, test_size=val_size, random_state=seed
-        # )
-
         # min-max scaler
         y_min, y_max = y_train.min(), y_train.max()
         scale = (y_max - y_min).clamp_min(1e-12)
 
         y_train = ((y_train - y_min)/scale).view(-1, 1)
         y_val = ((y_val - y_min)/scale).view(-1, 1)
-
-        # scaler = MinMaxScaler()
-        # y_train = scaler.fit_transform(y_train.reshape(-1, 1))
-        # y_val = scaler.transform(y_val.reshape(-1, 1))
-        # y_train = torch.tensor(y_train, dtype=self.dtype, device=self.device)
-        # y_val = torch.tensor(y_val, dtype=self.dtype,  device=self.device)
 
         loader_tr = DataLoader(
             LambdaSet(X_train, X_val, y_train, y_val, train=True),
@@ -211,8 +194,6 @@ class LambdaNetTrainer:
 
         pred_lambdas = self.predict(loader_te)
         pred_lambdas = (pred_lambdas * scale + y_min).detach().cpu().numpy()
-        # pred_lambdas = pred_lambdas.detach().cpu().numpy()
-        # pred_lambdas = scaler.inverse_transform(pred_lambdas.reshape(-1, 1)).flatten()
         print("Lambda prediction completed.")
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)

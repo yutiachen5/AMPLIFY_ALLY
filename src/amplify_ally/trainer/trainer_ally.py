@@ -225,25 +225,27 @@ def trainer_ally(cfg: DictConfig) -> None:
             # save_df = pd.DataFrame({"idx":idx_order, "flag": flag, "lambdas": lambdas})
             # save_df.to_csv(os.path.join(save_dir, "lambdas.csv"), index=False)
 
-            # Train lambdanet using samples which were seen by the model
-            lambdanet_trainer = LambdaNetTrainer(
-                model=reg, 
-                optimizer=optimizer_reg, 
-                device=accelerator.device, 
-                idx=idx_order, 
-                embeddings=embeddings, 
-                lambdas=lambdas, 
-                flag=flag, 
-                accelerator=accelerator, 
-                dtype=dtype_pad_mask,
-                **cfg.strategy
-            )
+            if cfg.strategy.epsilon != 1000:
+                print("Lmabdanet training for constrained learning")
+                # Train lambdanet using samples which were seen by the model
+                lambdanet_trainer = LambdaNetTrainer(
+                    model=reg, 
+                    optimizer=optimizer_reg, 
+                    device=accelerator.device, 
+                    idx=idx_order, 
+                    embeddings=embeddings, 
+                    lambdas=lambdas, 
+                    flag=flag, 
+                    accelerator=accelerator, 
+                    dtype=dtype_pad_mask,
+                    **cfg.strategy
+                )
 
-            # Update lambda value for the next rd
-            lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy)
-            # lambda_df = pd.DataFrame({'lambda_pred': lambdas})
-            # print(lambda_df.describe())
-            # lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
+                # Update lambda value for the next rd
+                lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy)
+                # lambda_df = pd.DataFrame({'lambda_pred': lambdas})
+                # print(lambda_df.describe())
+                # lambda_df.to_csv(os.path.join(save_dir, "lambdas_pred.csv"), index=False)
 
             # Update dataloder based on actual and predicted lambda
             idx_order, dataloader = update_dataloader(
@@ -257,7 +259,6 @@ def trainer_ally(cfg: DictConfig) -> None:
             )
 
             dataloader = accelerator.prepare_data_loader(dataloader)
-
             print("Dataloader updated.")
 
         for it in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
@@ -476,9 +477,6 @@ def trainer_ally(cfg: DictConfig) -> None:
         # Log metrics
         metrics["num_epochs"] += 1
         metrics["num_batches_in_epoch"] = 0
-
-        # "Remove" the skipped dataloader once exhausted
-        skipped_train_dataloader = None
 
     # Make sure that the wandb tracker finishes correctly and close the progress bar
     pbar.close()

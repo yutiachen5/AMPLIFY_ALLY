@@ -1,5 +1,5 @@
 dir: outputs/${now:%Y-%m-%d-%H-%M-%S}
-resume: True
+resume: False
 max_steps: 1000000
 eval_steps: 100
 save_steps: 1000

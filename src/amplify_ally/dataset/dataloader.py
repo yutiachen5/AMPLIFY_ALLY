@@ -145,6 +145,7 @@ def update_dataloader(
     per_device_batch_size_kmeans: int,
     per_device_batch_size: int,
     num_workers: int,
+    epsilon: int,
     **kwargs,
 ) -> DataLoader:
     """Update the order of samples in the dataloader according to informativeness and diversity
@@ -160,9 +161,23 @@ def update_dataloader(
     Returns:
         torch.utils.data.DataLoader
     """
+    # shuffle the index list for unconstrained learning, the lambda values do not matter since they are all zeros.
+    if epsilon == 1000:
+        print("Unconstrained learning - randomize idx order for the next rd")
+        updated_idx_order = np.random.permutation(idx_order)
+        return updated_idx_order, DataLoader(
+            dataset=dataset.update(updated_idx_order),
+            batch_size=per_device_batch_size,
+            shuffle=False,
+            collate_fn=collator,
+            num_workers=num_workers,
+            prefetch_factor=2,
+            pin_memory=True,
+            persistent_workers=True,
+        )
+
 
     clusters = []
-
     kmeans = MiniBatchKMeans(
         n_clusters=n_clusters, 
         random_state=seed, 

@@ -3,7 +3,7 @@ _name_: ally
 # basic setting
 seed: 1357
 max_rds: 5
-epsilon: 2.25
+epsilon: 2.25 # set epsilon to 1000 for unconstrained learning
 dual_lr: 0.1
 dual_lr_gamma: 0.9
 dual_lr_stepsize: 500
