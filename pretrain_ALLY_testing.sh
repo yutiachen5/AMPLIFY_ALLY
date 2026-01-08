@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_unconstrained_uniref50_nsteps.20k_niter.1_nowarmup
-#SBATCH -A h200ea
-#SBATCH -p h200ea
-#SBATCH --gres=gpu:h200:1
-#SBATCH --time=72:00:00
+#SBATCH --job-name=testing_lambdanet_sigmoid2
+#SBATCH -A allenlab
+#SBATCH -p scavenger-gpu,gpu-common,igvf-gpu
+#SBATCH --gres=gpu:6000_ada:1
+#SBATCH --time=24:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=200G                      # memory per node
+#SBATCH --mem=80G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -65,9 +65,13 @@ srun \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
-	strategy.n_steps=20000 \
+	strategy.n_steps=10 \
 	strategy.slack_lr=1e-3 \
-	strategy.n_iters=1 \
-	strategy.epsilon=1000 \
-	strategy.swap=False
+	strategy.n_iters=5 \
+	strategy.n_clusters=1 \
+	strategy.epsilon=1.9 \
+	strategy.swap=True \
+	strategy.dual_lr_gamma=0.9 \
+	strategy.dual_lr_stepsize=1000 \
+	strategy.max_epochs=80
 "

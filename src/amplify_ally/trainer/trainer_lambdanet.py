@@ -58,20 +58,18 @@ class LambdaNetTrainer:
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
         self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
-        self.dtype = dtype
+        self.dtype = dtype # keep everything bf16 now
         self.device = device
 
-        self.trained_idx = idx[flag[idx] >= 1]
-        self.trained_emb = embeddings[flag[idx] >= 1]
-        self.trained_lambdas = lambdas[flag[idx] >= 1]
+        mask = (flag[idx] >= 1)
 
-        self.untrained_idx = idx[flag[idx] < 1]
-        self.untrained_emb = embeddings[flag[idx] < 1]
+        self.trained_idx = torch.as_tensor(idx[mask], dtype=torch.long)     # global ids
+        self.untrained_idx = torch.as_tensor(idx[~mask], dtype=torch.long)  # global ids
 
-        self.trained_lambdas = self.trained_lambdas.to(device=self.device, dtype=self.dtype)
-        self.trained_emb = self.trained_emb.to(device=self.device, dtype=self.dtype)
-        self.untrained_emb = self.untrained_emb.to(device=self.device, dtype=self.dtype)
-
+        self.trained_emb = (embeddings[mask]).to(device=self.device) # bf16
+        self.untrained_emb = (embeddings[~mask]).to(device=self.device) # bf16
+        self.trained_lambdas = lambdas[self.trained_idx].to(self.device) # bf16
+        
         del embeddings
 
     def train(self, dataloader: DataLoader) -> float:
@@ -107,18 +105,18 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x in dataloader:
-                out = self.model(x)
-                lambda_pred += out.squeeze().cpu().tolist()
-        
-        return torch.tensor(lambda_pred, dtype=torch.float32, device=self.device) # float32 for scale transformation
+                out = self.model(x).view(-1)#.to(torch.float32)
+                lambda_pred.append(out)
 
-    def reconstruct_lambdas(self, pred_lambdas: np.ndarray) -> torch.Tensor:
-        full_lambdas = np.zeros(len(self.trained_idx) + len(self.untrained_idx), dtype=float)
+        return torch.cat(lambda_pred, dim=0)
 
-        full_lambdas[self.trained_idx] = self.trained_lambdas.detach().to(torch.float32).cpu().numpy()
+    def reconstruct_lambdas(self, pred_lambdas: torch.Tensor) -> torch.Tensor:
+        full_lambdas = torch.zeros(self.trained_idx.shape[0] + self.untrained_idx.shape[0], device=self.device, dtype=self.dtype)
+
+        full_lambdas[self.trained_idx] = self.trained_lambdas.detach()
         full_lambdas[self.untrained_idx] = pred_lambdas
 
-        return torch.tensor(full_lambdas, dtype=torch.float32)
+        return full_lambdas.detach().cpu()
 
     def get_lambdas(
         self,
@@ -157,8 +155,8 @@ class LambdaNetTrainer:
         loader_val = DataLoader(
             LambdaSet(X_train, X_val, y_train, y_val, train=False),
             batch_size=self.per_device_batch_size,
-            shuffle=True,
-            drop_last=True,
+            shuffle=False,
+            drop_last=False,
         )
         loader_te = DataLoader(
             EmbDataset(self.untrained_emb), 
@@ -193,11 +191,10 @@ class LambdaNetTrainer:
             self.model.load_state_dict(best_state)
 
         pred_lambdas = self.predict(loader_te)
-        pred_lambdas = (pred_lambdas * scale + y_min).detach().cpu().numpy()
-        print("Lambda prediction completed.")
+        # pred_lambdas = (pred_lambdas * scale + y_min).detach().cpu().numpy()
+        pred_lambdas = pred_lambdas * scale + y_min     
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
-        print("Lambda updating completed.")
 
         return full_lambdas
 

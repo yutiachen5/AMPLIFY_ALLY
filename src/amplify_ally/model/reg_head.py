@@ -19,7 +19,7 @@ class LambdaNet(nn.Module):
             nn.LeakyReLU(),
 
             nn.Linear(64, 1),
-            nn.Softplus()  # for positive contraint
+            nn.Sigmoid() 
         )
 
     def forward(self, x):

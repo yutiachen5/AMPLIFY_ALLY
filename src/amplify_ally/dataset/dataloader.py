@@ -189,7 +189,15 @@ def update_dataloader(
     print("Kmeans clustering completed.")
     del embeddings
     
-    sorted_triplets = sorted(zip(clusters, lambdas, idx_order), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
+    # lambdas is global-id axis; align it to the embedding/cluster order (which is idx_order)
+    lambdas_aligned = lambdas.to(torch.float32).numpy()[idx_order]   # now aligned with idx_order
+
+    sorted_triplets = sorted(
+        zip(clusters, lambdas_aligned, idx_order),
+        key=lambda t: (t[0], -t[1])   
+    )
+
+    # sorted_triplets = sorted(zip(clusters, lambdas, idx_order), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
     sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
     del clusters, sorted_triplets
 
@@ -220,6 +228,6 @@ def update_dataloader(
         num_workers=num_workers,
         prefetch_factor=2,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 

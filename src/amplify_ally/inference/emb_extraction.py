@@ -5,6 +5,7 @@ def get_embedding(
     model: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
+    dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """Get the embeddings after each round
 
@@ -31,14 +32,15 @@ def get_embedding(
             emb = model(x, pad_mask, output_hidden_states=True).hidden_states[-1]
 
             # Mean pooling to get the seq-level representation. 0: valid, inf: false
-            pooling_indicator = torch.isfinite(pad_mask).to(torch.float32)
+            pooling_indicator = torch.isfinite(pad_mask)
             valid_counts = torch.sum(pooling_indicator, dim=1, keepdim=True)
             pooled_emb = torch.sum(emb*pooling_indicator.unsqueeze(-1), dim=1)/valid_counts # [batch_size, emb_dim], seq-level embeddings
             pooled_emb = pooled_emb.detach().cpu()
             embedding.append(pooled_emb)
 
             pbar.update(1)
-        embedding = torch.cat(embedding, dim=0) # [n_samples, emb_dim], emb is on cpu
+
+        embedding = torch.cat(embedding, dim=0).to(dtype=dtype) # [n_samples, emb_dim], emb is on cpu
 
     model.train()
     pbar.close()
