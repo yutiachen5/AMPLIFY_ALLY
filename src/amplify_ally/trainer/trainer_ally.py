@@ -27,8 +27,6 @@ from ..inference import get_embedding, pooling
 from .trainer_lambdanet import LambdaNetTrainer
 
 
-jobName = str(os.environ['SLURM_JOB_NAME'])
-
 def evaluate(
     model: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,
@@ -59,7 +57,6 @@ def evaluate(
 
     return num_val_pred, sum_val_loss, num_val_correct
 
-
 def trainer_ally(cfg: DictConfig) -> None:
     """Entrypoint for training a model with the given configuraiton.
 
@@ -70,7 +67,10 @@ def trainer_ally(cfg: DictConfig) -> None:
     if not config_check.is_ok():
         raise ConfigError(config_check)
     it = 0
+
+
     chk_dir = os.path.join(cfg.trainer.dir, "checkpoints")
+
     # Delete the folder if resume is disable and folder exists
     if cfg.trainer.resume is False:
         shutil.rmtree(chk_dir, ignore_errors=True)
@@ -139,12 +139,13 @@ def trainer_ally(cfg: DictConfig) -> None:
     accelerator.log({"model_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)})
 
     # Get the dtype for the pad_mask and class_weights
-    dtype_pad_mask, dtype_class_weight = torch.float32, torch.float32
+    # default values for now: dtype_pad_mask: bf16, dtype_class_weight: torch.float32/bf16??, dtype_reg_head: torch.float32
+    dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.float32
     if accelerator.mixed_precision == "fp16":
         dtype_pad_mask = torch.float16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.float16
-    elif accelerator.mixed_precision == "bf16":
+    elif accelerator.mixed_precision == "bf16": # default
         dtype_pad_mask = torch.bfloat16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.bfloat16
@@ -170,15 +171,15 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize parameters for constrained learning
     dataset = train_dataloader.dataset
-    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
-    slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
+    lambdas = torch.zeros(len(dataset), requires_grad=False) 
+    slacks = torch.zeros(len(dataset), requires_grad=False)
     flag = np.zeros(len(dataset))
     idx_order = np.arange(len(dataset))
 
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
-    reg = reg.to(device=accelerator.device, dtype=dtype_pad_mask)
+    reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
 
     # Get loss functions
@@ -209,26 +210,27 @@ def trainer_ally(cfg: DictConfig) -> None:
     #     model, 
     #     accelerator.prepare(emb_dataloader(dataset, collator, **cfg.strategy, **cfg.trainer.train)), 
     #     accelerator.device,
-    #     dtype_pad_mask,
+    #     dtype_reg_head,
     # )
 
     dual_lr = cfg.strategy.dual_lr
 
-    for rd in range(cfg.strategy.max_rds): # fixed number of rounds
+    for rd in range(1, cfg.strategy.max_rds + 1): # fixed number of rounds
         print(f"#### Round {rd} ####")
-        if rd > 0:
+
+        if rd > 1:
             # Rebuild train data loader according to the order of informativeness and diversity
             embeddings = get_embedding(
                 model, 
                 accelerator.prepare(emb_dataloader(dataset, collator, **cfg.strategy, **cfg.trainer.train)), 
                 accelerator.device,
-                dtype_pad_mask
+                dtype_reg_head
             )
 
             if cfg.strategy.epsilon != 1000:
                 print("Lmabdanet training for constrained learning")
-                # Train lambdanet using samples which were seen by the model
                 lambdanet_trainer = LambdaNetTrainer(
+                    rd=rd - 1, # -1 since it's based on the prev rd
                     model=reg, 
                     optimizer=optimizer_reg, 
                     device=accelerator.device, 
@@ -237,7 +239,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     lambdas=lambdas, 
                     flag=flag, 
                     accelerator=accelerator, 
-                    dtype=dtype_pad_mask,
+                    save_dir=cfg.trainer.dir, 
+                    dtype=dtype_reg_head,
                     **cfg.strategy
                 )
 
@@ -256,30 +259,27 @@ def trainer_ally(cfg: DictConfig) -> None:
                 **cfg.trainer.train,
             )
 
-            # Saving for sanity check (only for constrained learning)
+            # Saving embeddings, lambdas, and regression head checkpoint (only for constrained learning)
             if cfg.strategy.epsilon != 1000:
-                now = datetime.datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y-%m-%d-%H-%M-%S")
-                save_dir = f"/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/outputs/{jobName}/{now}/"
-                os.makedirs(save_dir, exist_ok=True)
-                np.save(os.path.join(save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
+                np.save(os.path.join(cfg.trainer.dir, f"Round_{rd-1}", "embeddings.npy"), embeddings.numpy())
 
                 idx_np = np.asarray(idx_order, dtype=np.int64)
                 flag_np = np.asarray(flag)
-                actual_np = lambdas_tmp.detach().to(torch.float32).cpu().numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
-                pred_np    = lambdas.detach().to(torch.float32).cpu().numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
+                actual_np = lambdas_tmp.detach().cpu().numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
+                pred_np    = lambdas.detach().cpu().numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
                 df = pd.DataFrame({
                     "idx": idx_np,
                     "flag": flag_np[idx_np],
                     "lambda_act": actual_np[idx_np],
                     "lambda_pred": pred_np[idx_np],
                 })
-                df.to_csv(os.path.join(save_dir, "lambdas.csv"), index=False, float_format="%.8f")
+                df.to_csv(os.path.join(cfg.trainer.dir, f"Round_{rd-1}", "lambdas.csv"), index=False, float_format="%.8f")
 
             dataloader = accelerator.prepare_data_loader(dataloader)
             print("Dataloader updated.")
 
-        for it in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
-            print("Iteration: ", it+1)
+        for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
+            print("Iteration: ", iteration + 1)
             for global_id, x, y, pad_mask in dataloader:
                 # Keep the indices of traning samples
                 global_id = np.array(global_id.cpu())
@@ -302,7 +302,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         out = model(x, pad_mask, output_hidden_states=True)
                         logits = out.logits
 
-                        # if it == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
+                        # if iteration == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
                         #     embeddings[global_id] = pooling(out.hidden_states[-1], pad_mask, **cfg.strategy)
 
                         valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 is for unmasked)
@@ -327,7 +327,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                                 lambdas_current=lambdas_current,
                                 slacks_current=slacks_current,
                                 lr_dual=dual_lr,
-                                dtype=dtype_pad_mask,
+                                dtype=dtype_reg_head,
                                 **cfg.strategy, 
                             )
 
@@ -356,7 +356,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                                 lambdas_current=lambdas_current,
                                 slacks_current=slacks_current,
                                 lr_dual=dual_lr,
-                                dtype=dtype_pad_mask,
+                                dtype=dtype_reg_head,
                                 **cfg.strategy, 
                             )
 
@@ -372,7 +372,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     out = model(x, pad_mask, output_hidden_states=True) # x, mask: [batch_size, max_len]
                     logits = out.logits
 
-                    # if it == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
+                    # if iteration == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
                     #     embeddings[global_id] = pooling(out.hidden_states[-1], pad_mask, **cfg.strategy)
 
                     valid_pos = (y != -100)
@@ -399,7 +399,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                             lambdas_current=lambdas_current,
                             slacks_current=slacks_current,
                             lr_dual=dual_lr,
-                            dtype=dtype_pad_mask,
+                            dtype=dtype_reg_head,
                             **cfg.strategy, 
                         )
 
@@ -428,7 +428,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                             lambdas_current=lambdas_current,
                             slacks_current=slacks_current,
                             lr_dual=dual_lr,
-                            dtype=dtype_pad_mask,
+                            dtype=dtype_reg_head,
                             **cfg.strategy, 
                         )
 

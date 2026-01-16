@@ -1,3 +1,4 @@
+
 import torch
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
@@ -94,18 +95,17 @@ def update_dual_variables(
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-    train_loss_seq = train_loss_seq.detach().cpu()
+    train_loss_seq = train_loss_seq.detach().cpu().to(dtype)
     nan_mask = torch.isnan(train_loss_seq)
     nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
     
-    # train_loss_seq[nan_idxs] = (epsilon + slacks_current[nan_idxs]).to(dtype)
-    train_loss_seq[nan_idxs] = epsilon
+    train_loss_seq[nan_idxs] = epsilon + slacks_current[nan_idxs]
+    # train_loss_seq[nan_idxs] = epsilon
 
     lambdas_prev = lambdas_current.clone()
-    # lambdas_current += lr_dual*(train_loss_seq-(epsilon+slacks_current))
-    lambdas_current += lr_dual*(train_loss_seq-epsilon)
-
-    # slacks_current -= slack_lr*(alpha*slacks_current-lambdas_prev) 
+    lambdas_current += lr_dual * (train_loss_seq - (epsilon + slacks_current))
+    # lambdas_current += lr_dual * (train_loss_seq - epsilon)
+    slacks_current -= slack_lr * (alpha * slacks_current - lambdas_prev) 
 
     lambdas_current.data.clamp_(min=0)
     slacks_current.data.clamp_(min=0)

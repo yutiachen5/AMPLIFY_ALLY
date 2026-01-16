@@ -22,6 +22,7 @@ per_device_batch_size_kmeans: 512
 per_device_batch_size_emb: 1024
 optimizer_lr: 1e-4
 print_every: 1
+resume: True
 
 # embedding pooling
 pooling: mean

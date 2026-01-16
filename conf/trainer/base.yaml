@@ -1,4 +1,4 @@
-dir: outputs/${now:%Y-%m-%d-%H-%M-%S}
+dir: outputs
 resume: False
 max_steps: 1000000
 eval_steps: 100

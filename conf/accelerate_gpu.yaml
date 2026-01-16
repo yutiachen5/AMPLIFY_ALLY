@@ -1,6 +1,6 @@
 compute_environment: LOCAL_MACHINE                                                                                                                 
 debug: false                                                                                                                                       
-distributed_type: 'NO'
+distributed_type: DEEPSPEED
 downcast_bf16: 'no'
 ipex_config:
   ipex: false
