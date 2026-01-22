@@ -1,4 +1,5 @@
 import os
+import gc
 import re
 import sys
 import pytz
@@ -278,6 +279,14 @@ def trainer_ally(cfg: DictConfig) -> None:
             dataloader = accelerator.prepare_data_loader(dataloader)
             print("Dataloader updated.")
 
+            del embeddings
+            del lambdanet_trainer
+            del df, idx_np, flag_np, actual_np, pred_np
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("Cache deleted.")
+
         for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
             print("Iteration: ", iteration + 1)
             for global_id, x, y, pad_mask in dataloader:
@@ -299,7 +308,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
                     with accelerator.no_sync(model):
                         # Forward pass
-                        out = model(x, pad_mask, output_hidden_states=True)
+                        out = model(x, pad_mask) # output_hidden_states=True if use the statement below
                         logits = out.logits
 
                         # if iteration == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter
@@ -369,7 +378,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 else:
                     # Forward pass
-                    out = model(x, pad_mask, output_hidden_states=True) # x, mask: [batch_size, max_len]
+                    out = model(x, pad_mask) # x, mask: [batch_size, max_len]
                     logits = out.logits
 
                     # if iteration == cfg.strategy.n_iters - 1: # replace the emb with the actual emb from the model during the last iter

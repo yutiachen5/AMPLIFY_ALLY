@@ -71,10 +71,9 @@ class LambdaNetTrainer:
         self.ckpt_path_save = os.path.join(save_dir, f"Round_{rd}", "reg_ckpt.pt")
         self.ckpt_path_load = os.path.join(save_dir, f"Round_{rd-1}", "reg_ckpt.pt")
 
-        os.makedirs(os.path.dirname(self.ckpt_path_save), exist_ok=True)\
+        os.makedirs(os.path.dirname(self.ckpt_path_save), exist_ok=True)
 
-        m = re.search(r"Round_(\d+)", str(save_dir))
-        rd = int(m.group(1)) if m else None
+        print('rd', rd)
 
         ckpt_exists = (
             rd is not None
@@ -84,6 +83,7 @@ class LambdaNetTrainer:
         )
 
         if self.resume and ckpt_exists: 
+            print("Loading lambdanet checkpoint from ", str(self.ckpt_path_load))
             self.model, self.optimizer = self.load_reg_ckpt(model, optimizer, self.ckpt_path_load)
         else:
             self.model, self.optimizer = model, optimizer
@@ -95,8 +95,6 @@ class LambdaNetTrainer:
         self.untrained_emb = (embeddings[~mask]).to(device=self.device) 
         self.trained_lambdas = lambdas[self.trained_idx].to(self.device) 
         
-        del embeddings
-
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
         total_loss = 0.0

@@ -100,7 +100,7 @@ def get_dataloader(
             num_workers=num_workers,
             prefetch_factor=2,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,
         )
     else:
         return {
@@ -111,7 +111,7 @@ def get_dataloader(
                 num_workers=num_workers,
                 prefetch_factor=2,
                 pin_memory=True,
-                persistent_workers=True,
+                persistent_workers=False,
             )
             for k, v in paths.items()
         }
@@ -131,7 +131,7 @@ def emb_dataloader(
         num_workers=num_workers,
         prefetch_factor=2,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 
 def update_dataloader(
@@ -173,7 +173,7 @@ def update_dataloader(
             num_workers=num_workers,
             prefetch_factor=2,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,
         )
 
 
@@ -185,9 +185,10 @@ def update_dataloader(
         n_init='auto',
     )
 
-    clusters = kmeans.fit_predict(embeddings.detach().to(torch.float32).cpu().numpy())
-    print("Kmeans clustering completed.")
-    del embeddings
+    X = embeddings.detach().to(torch.float32).cpu().numpy()
+    clusters = kmeans.fit_predict(X)
+    del X, embeddings
+    gc.collect()
     
     # lambdas is global-id axis; align it to the embedding/cluster order (which is idx_order)
     lambdas_aligned = lambdas.to(torch.float32).numpy()[idx_order]   # now aligned with idx_order
@@ -197,9 +198,9 @@ def update_dataloader(
         key=lambda t: (t[0], -t[1])   
     )
 
-    # sorted_triplets = sorted(zip(clusters, lambdas, idx_order), key=lambda x: (x[0], -x[1])) # sort by cluster and then lambda
     sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
     del clusters, sorted_triplets
+    gc.collect()
 
     cluster_to_samples = defaultdict(list)
     for c, l, idx in zip(sorted_clusters, sorted_lambdas, sorted_idxs):

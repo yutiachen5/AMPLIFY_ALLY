@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_lambdanet_ckpt
+#SBATCH --job-name=ALLY_nsamples.30M_niter.1_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.1k_dualgamma.0.9_warmup.0_resume.True
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=6:00:00
+#SBATCH --time=24:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=80G                      # memory per node
+#SBATCH --mem=250G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -65,13 +65,13 @@ srun \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
-	strategy.n_steps=15000 \
+	strategy.n_steps=20000 \
 	strategy.slack_lr=1e-3 \
 	strategy.n_iters=1 \
 	strategy.n_clusters=2048 \
 	strategy.epsilon=1.9 \
-	strategy.swap=False \
+	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
-	strategy.dual_lr_stepsize=5000 \
-	strategy.max_epochs=80
+	strategy.dual_lr_stepsize=1000 \
+	strategy.max_epochs=150
 "
