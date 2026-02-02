@@ -99,13 +99,14 @@ def update_dual_variables(
     nan_mask = torch.isnan(train_loss_seq)
     nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
     
-    # train_loss_seq[nan_idxs] = epsilon + slacks_current[nan_idxs]
-    train_loss_seq[nan_idxs] = epsilon
-
-    lambdas_prev = lambdas_current.clone()
-    # lambdas_current += lr_dual * (train_loss_seq - (epsilon + slacks_current))
-    lambdas_current += lr_dual * (train_loss_seq - epsilon)
-    slacks_current -= slack_lr * (alpha * slacks_current - lambdas_prev) 
+    if slack_lr <= 0: # update without slack, slack should be 0 always
+        train_loss_seq[nan_idxs] = epsilon
+        lambdas_current += lr_dual * (train_loss_seq - epsilon)
+    else: # update with slack
+        lambdas_prev = lambdas_current.clone()
+        train_loss_seq[nan_idxs] = epsilon + slacks_current[nan_idxs]
+        lambdas_current += lr_dual * (train_loss_seq - (epsilon + slacks_current))
+        slacks_current -= slack_lr * (alpha * slacks_current - lambdas_prev) 
 
     lambdas_current.data.clamp_(min=0)
     slacks_current.data.clamp_(min=0)

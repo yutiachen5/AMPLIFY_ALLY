@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_unconstrained_uniref50_nsteps.20k_niter.1_nowarmup
+#SBATCH --job-name=unconstrained_nsteps.20k_niter.1_nowarmup
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=72:00:00
+#SBATCH --time=48:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=200G                      # memory per node
+#SBATCH --mem=250G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 

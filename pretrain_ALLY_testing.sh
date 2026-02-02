@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_lambdanet_sigmoid2
+#SBATCH --job-name=testing_bf16
 #SBATCH -A allenlab
 #SBATCH -p scavenger-gpu,gpu-common,igvf-gpu
-#SBATCH --gres=gpu:6000_ada:1
-#SBATCH --time=24:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --time=1:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -67,11 +67,12 @@ srun \
 	trainer.gradient_accumulation_steps=2 \
 	strategy.n_steps=10 \
 	strategy.slack_lr=1e-3 \
-	strategy.n_iters=5 \
+	strategy.n_iters=1 \
 	strategy.n_clusters=1 \
 	strategy.epsilon=1.9 \
 	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
 	strategy.dual_lr_stepsize=1000 \
-	strategy.max_epochs=80
+	strategy.max_epochs=80 \
+	dataset=demo
 "

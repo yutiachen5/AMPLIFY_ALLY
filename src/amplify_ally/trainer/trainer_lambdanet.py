@@ -65,15 +65,13 @@ class LambdaNetTrainer:
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
         self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
-        self.dtype = dtype # keep everything float32 in the regression head
+        self.dtype = dtype 
         self.device = device
         self.resume = resume
         self.ckpt_path_save = os.path.join(save_dir, f"Round_{rd}", "reg_ckpt.pt")
         self.ckpt_path_load = os.path.join(save_dir, f"Round_{rd-1}", "reg_ckpt.pt")
 
         os.makedirs(os.path.dirname(self.ckpt_path_save), exist_ok=True)
-
-        print('rd', rd)
 
         ckpt_exists = (
             rd is not None
@@ -167,6 +165,7 @@ class LambdaNetTrainer:
         seed: int = 42,
         max_epochs: int = 100,
         print_every: int = 10,
+        patience: int = 3,
         **kwargs,
     ) -> torch.Tensor:
         n = self.trained_emb.shape[0]
@@ -174,6 +173,7 @@ class LambdaNetTrainer:
 
         g = torch.Generator(device="cpu").manual_seed(seed)
         perm = torch.randperm(n, generator=g)
+
         val_idx = perm[:n_val]
         train_idx = perm[n_val:]
 
@@ -210,6 +210,7 @@ class LambdaNetTrainer:
 
         best_state = None
         best_val_loss = float("inf")
+        n_no_improve = 0
 
         for epoch in range(max_epochs):
             train_loss = self.train(loader_tr)
@@ -220,12 +221,20 @@ class LambdaNetTrainer:
                 best_val_loss = val_loss
                 # Keep the best model based on val loss
                 best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+                n_no_improve = 0
+            else:
+                n_no_improve += 1
 
             if epoch % print_every == 0:
                 print(
                     f"[Epoch {epoch:03d}] Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}",
                     flush=True,
                 )
+
+            if n_no_improve >= patience:
+                print(f"Early stopping at epoch {epoch} (no val improvement for {patience} epochs).")
+                break
+            
         print("Lambda training completed.")
 
         if best_state is None:

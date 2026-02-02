@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.30M_niter.1_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.1k_dualgamma.0.9_warmup.0_resume.True
+#SBATCH --job-name=ALLY_nsamples.30M_niter.2_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_epoch.200_patience.20
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -66,12 +66,13 @@ srun \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
 	strategy.n_steps=20000 \
-	strategy.slack_lr=1e-3 \
-	strategy.n_iters=1 \
+	strategy.slack_lr=0 \
+	strategy.n_iters=2 \
 	strategy.n_clusters=2048 \
 	strategy.epsilon=1.9 \
 	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
-	strategy.dual_lr_stepsize=1000 \
-	strategy.max_epochs=150
+	strategy.dual_lr_stepsize=5000 \
+	strategy.max_epochs=200 \
+	strategy.patience=20
 "

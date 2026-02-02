@@ -141,7 +141,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Get the dtype for the pad_mask and class_weights
     # default values for now: dtype_pad_mask: bf16, dtype_class_weight: torch.float32/bf16??, dtype_reg_head: torch.float32
-    dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.float32
+    dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.bfloat16
     if accelerator.mixed_precision == "fp16":
         dtype_pad_mask = torch.float16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
@@ -172,8 +172,8 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize parameters for constrained learning
     dataset = train_dataloader.dataset
-    lambdas = torch.zeros(len(dataset), requires_grad=False) 
-    slacks = torch.zeros(len(dataset), requires_grad=False)
+    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
+    slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     idx_order = np.arange(len(dataset))
 
@@ -262,12 +262,12 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             # Saving embeddings, lambdas, and regression head checkpoint (only for constrained learning)
             if cfg.strategy.epsilon != 1000:
-                np.save(os.path.join(cfg.trainer.dir, f"Round_{rd-1}", "embeddings.npy"), embeddings.numpy())
+                np.save(os.path.join(cfg.trainer.dir, f"Round_{rd-1}", "embeddings.npy"), embeddings.to(torch.float32).numpy())
 
                 idx_np = np.asarray(idx_order, dtype=np.int64)
                 flag_np = np.asarray(flag)
-                actual_np = lambdas_tmp.detach().cpu().numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
-                pred_np    = lambdas.detach().cpu().numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
+                actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
+                pred_np    = lambdas.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
                 df = pd.DataFrame({
                     "idx": idx_np,
                     "flag": flag_np[idx_np],
@@ -279,13 +279,17 @@ def trainer_ally(cfg: DictConfig) -> None:
             dataloader = accelerator.prepare_data_loader(dataloader)
             print("Dataloader updated.")
 
-            del embeddings
-            del lambdanet_trainer
-            del df, idx_np, flag_np, actual_np, pred_np
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            print("Cache deleted.")
+            if cfg.strategy.epsilon != 1000:
+                del embeddings
+                del lambdanet_trainer
+                del df, idx_np, flag_np, actual_np, pred_np
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("Cache deleted.")
+            else:
+                del embeddings
+                gc.collect()
 
         for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
             print("Iteration: ", iteration + 1)
