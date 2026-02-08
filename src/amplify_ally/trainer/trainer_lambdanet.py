@@ -30,6 +30,7 @@ class LambdaNetTrainer:
         embeddings: torch.Tensor,
         lambdas: torch.Tensor,
         flag: np.ndarray,
+        seed: int,
         accelerator: Accelerator,
         save_dir: str,
         per_device_batch_size_lambdanet: int,
@@ -48,6 +49,7 @@ class LambdaNetTrainer:
             embeddings (torch.Tensor): Embeddings aligned with idx.
             lambdas (torch.Tensor): Target lambda values corresponding to embeddings.
             flag (np.ndarray): Indicator array, where `flag[i] >= 1` means the sample (with global ID `i`) was seen/trained by the model, and `< 1` means unseen.
+            seed (int): Random seed.
             accelerator (accelerate.Accelerator): Handles device placement and distributed training.
             save_dir (str): Saving directory for lambdanet if resume is true.
             per_device_batch_size_lambdanet (int): Batch size per device for lambdanet trainer.
@@ -61,6 +63,7 @@ class LambdaNetTrainer:
             untrained_idx (np.ndarray): Subset of idx where flag < 1.
             untrained_emb (torch.Tensor): Embeddings of unseen samples.
         """
+        self.seed = seed
         self.optimizer = optimizer
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
@@ -162,7 +165,6 @@ class LambdaNetTrainer:
     def get_lambdas(
         self,
         val_size: float = 0.2,
-        seed: int = 42,
         max_epochs: int = 100,
         print_every: int = 10,
         patience: int = 3,
@@ -171,7 +173,7 @@ class LambdaNetTrainer:
         n = self.trained_emb.shape[0]
         n_val = int(val_size * n)
 
-        g = torch.Generator(device="cpu").manual_seed(seed)
+        g = torch.Generator(device="cpu").manual_seed(self.seed)
         perm = torch.randperm(n, generator=g)
 
         val_idx = perm[:n_val]

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.30M_niter.2_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_epoch.200_patience.20
+#SBATCH --job-name=ALLY_nsamples.30M_niter.1_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_epoch.200_patience.20_seed.100
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -60,19 +60,20 @@ srun \
 	scheduler=cosine_decay \
 	scheduler.warmup_steps=0 \
 	trainer.dir=logs/$SLURM_JOB_NAME \
-	trainer.max_steps=1000000 \
+	trainer.max_steps=100000 \
 	scheduler.final_step=900000 \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
 	strategy.n_steps=20000 \
 	strategy.slack_lr=0 \
-	strategy.n_iters=2 \
+	strategy.n_iters=1 \
 	strategy.n_clusters=2048 \
 	strategy.epsilon=1.9 \
 	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
-	strategy.dual_lr_stepsize=5000 \
+	strategy.dual_lr_stepsize=1000 \
 	strategy.max_epochs=200 \
-	strategy.patience=20
+	strategy.patience=20 \
+	seed=100
 "

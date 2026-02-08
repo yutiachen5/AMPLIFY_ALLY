@@ -13,7 +13,7 @@ from tqdm import tqdm
 from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
-from accelerate import Accelerator
+from accelerate import Accelerator, skip_first_batches
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
 
@@ -170,6 +170,9 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
     collator = train_dataloader.collate_fn
 
+    # Constrained learning or not
+    constrained = (cfg.strategy.epsilon != 1000)
+
     # Initialize parameters for constrained learning
     dataset = train_dataloader.dataset
     lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
@@ -221,17 +224,17 @@ def trainer_ally(cfg: DictConfig) -> None:
 
         if rd > 1:
             # Rebuild train data loader according to the order of informativeness and diversity
-            embeddings = get_embedding(
-                model, 
-                accelerator.prepare(emb_dataloader(dataset, collator, **cfg.strategy, **cfg.trainer.train)), 
-                accelerator.device,
-                dtype_reg_head
-            )
+            if constrained:
+                embeddings = get_embedding(
+                    model, 
+                    accelerator.prepare(emb_dataloader(dataset, collator, **cfg.strategy, **cfg.trainer.train)), 
+                    accelerator.device,
+                    dtype_reg_head
+                )
 
-            if cfg.strategy.epsilon != 1000:
                 print("Lmabdanet training for constrained learning")
                 lambdanet_trainer = LambdaNetTrainer(
-                    rd=rd - 1, # -1 since it's based on the prev rd
+                    rd=rd - 1, # -1 since it's based on the previous rd
                     model=reg, 
                     optimizer=optimizer_reg, 
                     device=accelerator.device, 
@@ -239,6 +242,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     embeddings=embeddings, 
                     lambdas=lambdas, 
                     flag=flag, 
+                    seed=cfg.seed,
                     accelerator=accelerator, 
                     save_dir=cfg.trainer.dir, 
                     dtype=dtype_reg_head,
@@ -249,21 +253,19 @@ def trainer_ally(cfg: DictConfig) -> None:
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
                 lambdas = lambdanet_trainer.get_lambdas(**cfg.strategy) # pred
 
-            # Update dataloder based on actual and predicted lambda
-            idx_order, dataloader = update_dataloader(
-                dataset=dataset,
-                collator=collator,
-                embeddings=embeddings, 
-                idx_order=idx_order, 
-                lambdas=lambdas, 
-                **cfg.strategy, 
-                **cfg.trainer.train,
-            )
+                # Update dataloder based on actual and predicted lambda
+                idx_order, dataloader = update_dataloader(
+                    dataset=dataset,
+                    collator=collator,
+                    embeddings=embeddings, 
+                    idx_order=idx_order, 
+                    lambdas=lambdas, 
+                    seed=cfg.seed,
+                    **cfg.strategy, 
+                    **cfg.trainer.train,
+                )
 
-            # Saving embeddings, lambdas, and regression head checkpoint (only for constrained learning)
-            if cfg.strategy.epsilon != 1000:
                 np.save(os.path.join(cfg.trainer.dir, f"Round_{rd-1}", "embeddings.npy"), embeddings.to(torch.float32).numpy())
-
                 idx_np = np.asarray(idx_order, dtype=np.int64)
                 flag_np = np.asarray(flag)
                 actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
@@ -276,24 +278,43 @@ def trainer_ally(cfg: DictConfig) -> None:
                 })
                 df.to_csv(os.path.join(cfg.trainer.dir, f"Round_{rd-1}", "lambdas.csv"), index=False, float_format="%.8f")
 
-            dataloader = accelerator.prepare_data_loader(dataloader)
-            print("Dataloader updated.")
+                dataloader = accelerator.prepare_data_loader(dataloader)
+                print("Dataloader updated.")
 
-            if cfg.strategy.epsilon != 1000:
                 del embeddings
                 del lambdanet_trainer
                 del df, idx_np, flag_np, actual_np, pred_np
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                print("Cache deleted.")
-            else:
-                del embeddings
-                gc.collect()
+            # else:
+                # embeddings = torch.zeros(len(dataset))
+
+                # # Update dataloder based on actual and predicted lambda
+                # idx_order, dataloader = update_dataloader(
+                #     dataset=dataset,
+                #     collator=collator,
+                #     embeddings=embeddings, 
+                #     idx_order=idx_order, 
+                #     lambdas=lambdas, 
+                #     **cfg.strategy, 
+                #     **cfg.trainer.train,
+                # )
+                # dataloader = skip_first_batches(dataloader, cfg.strategy.n_steps*cfg.trainer.gradient_accumulation_steps*(rd-1)) # resume training from where it stopped for unconstrained learning
+                # dataloader = accelerator.prepare_data_loader(dataloader)
+
+
 
         for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
             print("Iteration: ", iteration + 1)
-            for global_id, x, y, pad_mask in dataloader:
+            
+            # for global_id, x, y, pad_mask in dataloader:
+            if not constrained:
+                resume_step = cfg.strategy.n_steps*cfg.trainer.gradient_accumulation_steps*(rd-1)
+                dataloader = skip_first_batches(dataloader, resume_step)
+            for batch_idx, (global_id, x, y, pad_mask) in enumerate(dataloader, start=resume_step):
+                if rd > 1 and batch_idx % resume_step == 0:
+                    print(batch_idx)
                 # Keep the indices of traning samples
                 global_id = np.array(global_id.cpu())
 

@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=testing_bf16
-#SBATCH -A allenlab
-#SBATCH -p scavenger-gpu,gpu-common,igvf-gpu
+#SBATCH --job-name=testing_skip_dataloader
+#SBATCH -A naderilab
+#SBATCH -p scavenger-gpu
 #SBATCH --gres=gpu:1
 #SBATCH --time=1:00:00
 
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=80G                      # memory per node
+#SBATCH --mem=60G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -69,7 +69,7 @@ srun \
 	strategy.slack_lr=1e-3 \
 	strategy.n_iters=1 \
 	strategy.n_clusters=1 \
-	strategy.epsilon=1.9 \
+	strategy.epsilon=1000 \
 	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
 	strategy.dual_lr_stepsize=1000 \

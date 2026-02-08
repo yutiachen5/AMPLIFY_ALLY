@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=unconstrained_nsteps.20k_niter.1_nowarmup
+#SBATCH --job-name=unconstrained_nsteps.20k_niter.1_skip
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=250G                      # memory per node
+#SBATCH --mem=100G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -60,7 +60,7 @@ srun \
 	scheduler=cosine_decay \
 	scheduler.warmup_steps=0 \
 	trainer.dir=logs/$SLURM_JOB_NAME \
-	trainer.max_steps=1000000 \
+	trainer.max_steps=100000 \
 	scheduler.final_step=900000 \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
