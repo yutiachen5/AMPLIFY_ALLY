@@ -141,6 +141,7 @@ outputs/
 # Data folder
 uniref
 uniref/
+ProteinGym/
 
 # Slurm jobs and logs
 *.out

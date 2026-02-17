@@ -312,9 +312,9 @@ def trainer_ally(cfg: DictConfig) -> None:
             if not constrained:
                 resume_step = cfg.strategy.n_steps*cfg.trainer.gradient_accumulation_steps*(rd-1)
                 dataloader = skip_first_batches(dataloader, resume_step)
+            else: resume_step = 0
+            
             for batch_idx, (global_id, x, y, pad_mask) in enumerate(dataloader, start=resume_step):
-                if rd > 1 and batch_idx % resume_step == 0:
-                    print(batch_idx)
                 # Keep the indices of traning samples
                 global_id = np.array(global_id.cpu())
 
@@ -518,7 +518,12 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                     # Save the model from the main process
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
-                        accelerator.save_state()
+                        accelerator.save_state() # .safetensor
+
+                        step = int(metrics["num_steps"] / cfg.trainer.save_steps)
+                        step_dir = os.path.join(chk_dir, f"checkpoint_{step}")
+                        unwrapped = accelerator.unwrap_model(model)
+                        torch.save(unwrapped.state_dict(), os.path.join(step_dir, "model.pt"))
 
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break

@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.30M_niter.1_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_epoch.200_patience.20_seed.100
+#SBATCH --job-name=ALLY_nsamples.60M_mdoel.350M_niter.1_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_epoch.200_patience.20_seed.100
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=48:00:00
+#SBATCH --time=7-00:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1             # crucial - only 1 task per node!
 
 #SBATCH --cpus-per-gpu=4                # number of cpus per node
-#SBATCH --mem=250G                      # memory per node
+#SBATCH --mem=255G                      # memory per node
 #SBATCH --signal=TERM@60                # SIGTERM 60s prior to the allocation's end
                                         # will trigger a checkpoint
 
@@ -52,7 +52,8 @@ srun \
 	hydra.run.dir=logs/$SLURM_JOB_NAME \
 	wandb.dir=logs/$SLURM_JOB_NAME \
 	wandb.name=$SLURM_JOB_NAME \
-	model=[amplify,8M] \
+	dataset=uniref50 \
+	model=[amplify,120M] \
 	optimizer=adamw \
 	optimizer.lr=0.001 \
 	optimizer.betas=[0.9,0.95] \
@@ -65,6 +66,7 @@ srun \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
+	trainer.save_steps=10000 \
 	strategy.n_steps=20000 \
 	strategy.slack_lr=0 \
 	strategy.n_iters=1 \

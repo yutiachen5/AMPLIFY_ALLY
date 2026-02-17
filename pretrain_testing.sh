@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=testing_skip_dataloader
+#SBATCH --job-name=testing_save_pt_mdl
 #SBATCH -A naderilab
 #SBATCH -p scavenger-gpu
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:a5000:1
 #SBATCH --time=1:00:00
 
 #SBATCH --output=%x_output.txt
@@ -65,11 +65,12 @@ srun \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=256 \
 	trainer.gradient_accumulation_steps=2 \
+	trainer.save_steps=5 \
 	strategy.n_steps=10 \
 	strategy.slack_lr=1e-3 \
 	strategy.n_iters=1 \
 	strategy.n_clusters=1 \
-	strategy.epsilon=1000 \
+	strategy.epsilon=2 \
 	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
 	strategy.dual_lr_stepsize=1000 \
