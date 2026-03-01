@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_save_pt_mdl
-#SBATCH -A naderilab
-#SBATCH -p scavenger-gpu
-#SBATCH --gres=gpu:a5000:1
-#SBATCH --time=1:00:00
+#SBATCH --job-name=testing_iter_emb
+#SBATCH -A h200ea
+#SBATCH -p h200ea
+#SBATCH --gres=gpu:h200:1
+#SBATCH --time=10:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -52,7 +52,7 @@ srun \
 	hydra.run.dir=logs/$SLURM_JOB_NAME \
 	wandb.dir=logs/$SLURM_JOB_NAME \
 	wandb.name=$SLURM_JOB_NAME \
-	model=[amplify,8M] \
+	model=[amplify,120M] \
 	optimizer=adamw \
 	optimizer.lr=0.001 \
 	optimizer.betas=[0.9,0.95] \
@@ -74,6 +74,7 @@ srun \
 	strategy.swap=True \
 	strategy.dual_lr_gamma=0.9 \
 	strategy.dual_lr_stepsize=1000 \
+	strategy.per_device_batch_size_emb=2048 \
 	strategy.max_epochs=80 \
 	dataset=demo
 "

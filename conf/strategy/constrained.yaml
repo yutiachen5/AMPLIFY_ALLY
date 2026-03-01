@@ -23,6 +23,9 @@ optimizer_lr: 1e-4
 print_every: 1
 resume: True
 patience: 6
+num_workers: 0
+scaler: min-max
 
 # embedding pooling
 pooling: mean
+write_to_hard_drive: True

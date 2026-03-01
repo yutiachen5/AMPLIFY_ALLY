@@ -9,10 +9,8 @@ import re
 import numpy as np
 from copy import deepcopy
 from accelerate import Accelerator
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
 
-from ..dataset import LambdaSet, EmbDataset
+from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
 class LambdaNetTrainer:
     """
@@ -64,6 +62,8 @@ class LambdaNetTrainer:
             untrained_emb (torch.Tensor): Embeddings of unseen samples.
         """
         self.seed = seed
+        self.lambdas=lambdas
+        self.flag=flag
         self.optimizer = optimizer
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
@@ -73,8 +73,6 @@ class LambdaNetTrainer:
         self.resume = resume
         self.ckpt_path_save = os.path.join(save_dir, f"Round_{rd}", "reg_ckpt.pt")
         self.ckpt_path_load = os.path.join(save_dir, f"Round_{rd-1}", "reg_ckpt.pt")
-
-        os.makedirs(os.path.dirname(self.ckpt_path_save), exist_ok=True)
 
         ckpt_exists = (
             rd is not None
@@ -92,8 +90,6 @@ class LambdaNetTrainer:
         mask = (flag[idx] >= 1)
         self.trained_idx = torch.as_tensor(idx[mask], dtype=torch.long)     # global ids
         self.untrained_idx = torch.as_tensor(idx[~mask], dtype=torch.long)  # global ids
-        self.trained_emb = (embeddings[mask]).to(device=self.device) 
-        self.untrained_emb = (embeddings[~mask]).to(device=self.device) 
         self.trained_lambdas = lambdas[self.trained_idx].to(self.device) 
         
     def train(self, dataloader: DataLoader) -> float:
@@ -101,6 +97,7 @@ class LambdaNetTrainer:
         total_loss = 0.0
 
         for x, y in dataloader:
+            x, y = x.to(self.device), y.to(self.device) 
             self.optimizer.zero_grad()
             out = self.model(x)
             loss = F.mse_loss(out.squeeze(), y.squeeze())
@@ -116,6 +113,7 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x, y in dataloader:
+                x, y = x.to(self.device), y.to(self.device) 
                 out = self.model(x)
                 loss = F.mse_loss(out.squeeze(), y.squeeze())
                 total_loss += loss.item()
@@ -128,6 +126,7 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x in dataloader:
+                x = x.to(self.device)
                 out = self.model(x).view(-1)
                 lambda_pred.append(out)
 
@@ -164,59 +163,45 @@ class LambdaNetTrainer:
 
     def get_lambdas(
         self,
+        emb_dir: str,
         val_size: float = 0.2,
+        seed: int = 42,
         max_epochs: int = 100,
         print_every: int = 10,
         patience: int = 3,
+        num_workers: int = 4,
+        write_to_hard_drive: bool = True,
         **kwargs,
     ) -> torch.Tensor:
-        n = self.trained_emb.shape[0]
-        n_val = int(val_size * n)
-
-        g = torch.Generator(device="cpu").manual_seed(self.seed)
-        perm = torch.randperm(n, generator=g)
-
-        val_idx = perm[:n_val]
-        train_idx = perm[n_val:]
-
-        X_train = self.trained_emb[train_idx]
-        X_val   = self.trained_emb[val_idx]
-        y_train = self.trained_lambdas[train_idx]
-        y_val   = self.trained_lambdas[val_idx]
-
-        # min-max scaler
-        y_min, y_max = y_train.min(), y_train.max()
-        scale = (y_max - y_min).clamp_min(1e-12)
-
-        y_train = ((y_train - y_min)/scale).view(-1, 1)
-        y_val = ((y_val - y_min)/scale).view(-1, 1)
-
-        loader_tr = DataLoader(
-            LambdaSet(X_train, X_val, y_train, y_val, train=True),
-            batch_size=self.per_device_batch_size,
-            shuffle=True,
-            drop_last=True,
-        )
-        loader_val = DataLoader(
-            LambdaSet(X_train, X_val, y_train, y_val, train=False),
-            batch_size=self.per_device_batch_size,
-            shuffle=False,
-            drop_last=False,
-        )
-        loader_te = DataLoader(
-            EmbDataset(self.untrained_emb), 
-            batch_size=self.per_device_batch_size,
-            shuffle=False,
-            drop_last=False
-        )
+        if write_to_hard_drive:
+            loaders = get_reg_dataloaders_from_saved_emb_set(
+                emb_path=emb_dir,
+                lambdas=self.lambdas,
+                flag=self.flag,
+                batch_size=self.per_device_batch_size,
+                val_size=val_size,
+                seed=seed,
+                num_workers=num_workers
+            )
+        else:
+            loaders = get_reg_dataloaders_from_in_memory_emb_set(
+                embeddings=embeddings,
+                lambdas=self.lambdas,
+                flag=self.flag,
+                device=self.device,
+                batch_size=self.per_device_batch_size,
+                val_size=val_size,
+                seed=seed,
+                num_workers=num_workers
+            )
 
         best_state = None
         best_val_loss = float("inf")
         n_no_improve = 0
 
         for epoch in range(max_epochs):
-            train_loss = self.train(loader_tr)
-            val_loss = self.validate(loader_val)
+            train_loss = self.train(loaders["train"])
+            val_loss = self.validate(loaders["val"])
             self.scheduler.step(val_loss)
 
             if val_loss < best_val_loss:
@@ -244,8 +229,8 @@ class LambdaNetTrainer:
         else:
             self.model.load_state_dict(best_state)
 
-        pred_lambdas = self.predict(loader_te)
-        pred_lambdas = pred_lambdas * scale + y_min     
+        pred_lambdas = self.predict(loaders["test"])
+        # pred_lambdas = pred_lambdas * scale + y_min     
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
 

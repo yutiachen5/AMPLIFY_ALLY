@@ -16,7 +16,7 @@ from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig
 from ..metric import Metrics
 from ..loss import get_loss
-from ..dataset import get_dataloader
+from ..dataset import get_mlm_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 
@@ -138,7 +138,7 @@ def trainer(cfg: DictConfig) -> None:
             dtype_class_weight = torch.bfloat16
 
     # Train and validation Dataloaders
-    train_dataloader = get_dataloader(
+    train_dataloader = get_mlm_dataloader(
         **cfg.tokenizer,
         **cfg.dataset.train,
         **cfg.trainer.train,
@@ -146,7 +146,7 @@ def trainer(cfg: DictConfig) -> None:
         return_labels=False,
         dtype=dtype_pad_mask,
     )
-    eval_dataloaders = get_dataloader(
+    eval_dataloaders = get_mlm_dataloader(
         **cfg.tokenizer,
         **cfg.dataset.validation,
         **cfg.trainer.validation,

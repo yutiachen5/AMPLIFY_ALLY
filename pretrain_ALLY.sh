@@ -77,5 +77,6 @@ srun \
 	strategy.dual_lr_stepsize=1000 \
 	strategy.max_epochs=200 \
 	strategy.patience=20 \
+	strategy.per_device_batch_size_emb=2048 \
 	seed=100
 "

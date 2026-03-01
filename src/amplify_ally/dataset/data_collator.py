@@ -136,3 +136,18 @@ class DataCollatorMLM(object):
         pad_mask = torch.where(pad_mask, float("-inf"), float(0.0)).type(self.dtype)
 
         return (global_id, labels, x, y, pad_mask) if self.return_labels else (global_id, x, y, pad_mask)
+
+def DataCollatorLambdaNet(batch):
+    """
+    Batch is a list of tuples: (global_id, emb, lambdas, flag)
+
+    If emb/lambdas are strings, this returns lists of strings.
+    Replace parsing logic as needed.
+    """
+    global_ids, embs, lambdas, flags = zip(*batch)
+    return {
+        "global_id": list(global_ids),
+        "emb": list(embs),
+        "lambdas": list(lambdas),
+        "flag": torch.tensor(flags, dtype=torch.long),
+    }

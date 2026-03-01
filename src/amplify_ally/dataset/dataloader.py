@@ -1,20 +1,21 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 from ..tokenizer import ProteinTokenizer
-from .datasets import InMemoryProteinDataset
+from .datasets import InMemoryProteinDataset, SavedEmbDataset, InMemoryEmbDataset
 from .data_collator import DataCollatorMLM
 
 import gc
 import math
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.preprocessing import MinMaxScaler
 
-from typing import List, Callable
+from typing import List, Callable, Dict
 from collections import defaultdict
 
 
-def get_dataloader(
+def get_mlm_dataloader(
     vocab_path: str,
     pad_token_id: int,
     mask_token_id: int,
@@ -116,7 +117,7 @@ def get_dataloader(
             for k, v in paths.items()
         }
 
-def emb_dataloader(
+def get_emb_dataloader(
     dataset: torch.utils.data.Dataset, 
     collator: Callable,
     per_device_batch_size_emb: int,
@@ -134,7 +135,106 @@ def emb_dataloader(
         persistent_workers=False,
     )
 
-def update_dataloader(
+
+def get_reg_dataloaders_from_saved_emb_set(
+    emb_dir: str,
+    lambdas: torch.Tensor,
+    flag: np.ndarray,
+    batch_size: int,
+    val_size: float = 0.2,
+    seed: int = 42,
+    num_workers: int = 0,
+    kmeans: bool = False,
+) -> Dict[str, DataLoader]:
+    """
+    Returns dict with keys: train, val, test.
+    Notes:
+      - persistent_workers only valid if num_workers > 0.
+      - prefetch_factor only valid if num_workers > 0.
+    """
+
+    loader_kwargs = dict(
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
+    if kmeans:
+        kmeans_ds =  SavedEmbDataset(emb_dir, val_size, seed, split="kmeans")
+        return {"kmeans": DataLoader(kmeans_ds, **loader_kwargs)}
+    else:
+        train_ds = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="train")
+        val_ds   = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="val")
+        test_ds  = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="test")
+        return {
+            "train": DataLoader(train_ds, **loader_kwargs),
+            "val":   DataLoader(val_ds, **loader_kwargs),
+            "test":  DataLoader(test_ds, **loader_kwargs),
+        }
+
+def get_reg_dataloaders_from_in_memory_emb_set(
+    embeddings: torch.Tensor,
+    lambdas: torch.Tensor,
+    flag: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+    val_size: float = 0.2,
+    seed: int = 42,
+    num_workers: int = 0
+) -> Dict[str, DataLoader]:
+    mask = (flag[idx] >= 1)
+    trained_emb = (embeddings[mask]).to(device=device) 
+    untrained_emb = (embeddings[~mask]).to(device=device) 
+
+    n_val = int(val_size * trained_emb.shape[0])
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    perm = torch.randperm(n, generator=g)
+
+    val_idx = perm[:n_val]
+    train_idx = perm[n_val:]
+
+    X_train = trained_emb[train_idx]
+    X_val = trained_emb[val_idx]
+    y_train = self.trained_lambdas[train_idx]
+    y_val = self.trained_lambdas[val_idx]
+    X_test = untrained_emb
+
+    # min-max scaler
+    # y_min, y_max = y_train.min(), y_train.max()
+    # scale = (y_max - y_min).clamp_min(1e-12)
+
+    # y_train = ((y_train - y_min)/scale).view(-1, 1)
+    # y_val = ((y_val - y_min)/scale).view(-1, 1)
+
+    loader_kwargs = dict(
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
+    train_ds = InMemoryEmbDataset(X_train, X_val, y_train, y_val, X_test, split="train")
+    val_ds   = InMemoryEmbDataset(X_train, X_val, y_train, y_val, X_test, split="val")
+    test_ds  = InMemoryEmbDataset(X_train, X_val, y_train, y_val, X_test, split="test")
+
+    return {
+        "train": DataLoader(train_ds, **loader_kwargs),
+        "val":   DataLoader(val_ds, **loader_kwargs),
+        "test":  DataLoader(test_ds, **loader_kwargs),
+    }
+
+def update_mlm_dataloader(
     dataset: torch.utils.data.Dataset,
     collator: Callable,
     embeddings: torch.Tensor,
@@ -176,17 +276,38 @@ def update_dataloader(
             persistent_workers=False,
         )
 
+    if write_to_hard_drive:
+        loader = get_reg_dataloaders_from_saved_emb_set(
+            emb_path=emb_dir,
+            lambdas=lambdas,
+            flag=np.zeros(len(lambdas)), # flag, val_size and seed do not matter here
+            val_size=0.0, 
+            seed=seed,
+            batch_size=per_device_batch_size_kmeans,
+            num_workers=num_workers
+        )
 
-    clusters = []
-    kmeans = MiniBatchKMeans(
-        n_clusters=n_clusters, 
-        random_state=seed, 
-        batch_size=per_device_batch_size_kmeans, 
-        n_init='auto',
-    )
+        # fit Kmeans
+        for emb, _ in loader["kmeans"]:
+            kmeans.partial_fit(emb)
 
-    X = embeddings.detach().to(torch.float32).cpu().numpy()
-    clusters = kmeans.fit_predict(X)
+        # prediction
+        clusters = []
+        for emb, _ in loader["kmeans"]:
+            clusters.extend(kmeans.predict(emb))
+
+    else:
+        clusters = []
+        kmeans = MiniBatchKMeans(
+            n_clusters=n_clusters, 
+            random_state=seed, 
+            batch_size=per_device_batch_size_kmeans, 
+            n_init='auto',
+        )
+
+        X = embeddings.detach().to(torch.float32).cpu().numpy()
+        clusters = kmeans.fit_predict(X)
+
     del X, embeddings
     gc.collect()
     
@@ -231,4 +352,3 @@ def update_dataloader(
         pin_memory=True,
         persistent_workers=False,
     )
-

@@ -1,10 +1,15 @@
+import torch
 from typing import Tuple, Iterator
 from itertools import islice, zip_longest, repeat, chain
 from torch.utils.data import IterableDataset, get_worker_info, Dataset
 
 from typing import List
 
+import os
+import random
+import hashlib
 import numpy as np
+
 
 class IterableProteinDataset(IterableDataset):
     def __init__(self, paths: list, samples_before_next_set: list | None):
@@ -84,26 +89,85 @@ class InMemoryProteinDataset(Dataset):
         return global_idx, sample[0], sample[1] # (record_id, sequence)
 
 
-class LambdaSet(Dataset):
-    def __init__(self, X_train, X_test, y_train, y_test, train=True):
-        if train:
+class InMemoryEmbDataset(Dataset): 
+    def __init__(self, X_train, X_val, y_train, y_val, X_test, split="train"):
+        self.split = split
+
+        if split == "train":
             self.x_data, self.y_data = X_train, y_train
-        else:
-            self.x_data, self.y_data = X_test, y_test
+        elif split == "val":
+            self.x_data, self.y_data = X_val, y_val
+        elif split == "test":
+            self.x_data = X_test
     
     def __getitem__(self, i):
-        return self.x_data[i], self.y_data[i]
+        if self.split == "train" or self.split == "val":
+            return self.x_data[i], self.y_data[i]
+        elif self.split == "test":
+            return self.x_data[i]
 
     def __len__(self):
-        return self.y_data.shape[0]
+        return self.x_data.shape[0]
 
 
-class EmbDataset(Dataset):
-    def __init__(self, emb):
-        self.emb = emb
+# class EmbDataset(Dataset):
+#     def __init__(self, emb):
+#         self.emb = emb
+
+#     def __len__(self):
+#         return len(self.emb)
+
+#     def __getitem__(self, i):
+#         return self.emb[i]
+
+
+class SavedEmbDataset(Dataset):
+    def __init__(
+        self,
+        emb_dir: str,
+        lambdas: torch.Tensor,
+        flag: np.ndarray,
+        val_size: float = 0.2,
+        seed: int = 42,
+        split: str = "train",
+        **kwargs,
+    ):
+        self.emb_dir = emb_dir
+        self.lambdas = lambdas
+        idx = np.arange(len(lambdas))
+
+        if split == "kmeans":
+            self.active_idx = idx
+        else:
+            test_idx = idx[flag >= 1]
+            train_val_idx = idx[flag < 1]
+
+            rng = np.random.default_rng(seed)
+            n_val = int(round(len(train_val_idx) * val_size))
+            n_val = min(n_val, len(train_val_idx))
+
+            val_idx = rng.choice(train_val_idx, size=n_val, replace=False)
+            train_idx = np.array([j for j in train_val_idx if j not in set(val_idx.tolist())], dtype=np.int64)
+
+            if split == "train":
+                self.active_idx = train_idx
+            elif split == "val":
+                self.active_idx = val_idx
+            elif split == "test":
+                self.active_idx = test_idx
 
     def __len__(self):
-        return len(self.emb)
+        return int(len(self.active_idx))
 
-    def __getitem__(self, i):
-        return self.emb[i]
+    def _load_emb(self, global_id: int) -> torch.Tensor:
+        emb_path = os.path.join(self.emb_dir, f"seq_{int(global_id)}.pt")
+        emb = torch.load(emb_path, map_location="cpu")  
+        return emb
+
+    def __getitem__(self, i: int):
+        global_id = int(self.active_idx[i])
+
+        emb = self._load_emb(global_id)
+        l = self.lambdas[global_id] if self.lambdas is not None else None
+
+        return emb, l
