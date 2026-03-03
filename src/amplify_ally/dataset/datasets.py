@@ -139,8 +139,8 @@ class SavedEmbDataset(Dataset):
         if split == "kmeans":
             self.active_idx = idx
         else:
-            test_idx = idx[flag >= 1]
-            train_val_idx = idx[flag < 1]
+            test_idx = idx[flag < 1]
+            train_val_idx = idx[flag >= 1]
 
             rng = np.random.default_rng(seed)
             n_val = int(round(len(train_val_idx) * val_size))
@@ -168,6 +168,6 @@ class SavedEmbDataset(Dataset):
         global_id = int(self.active_idx[i])
 
         emb = self._load_emb(global_id)
-        l = self.lambdas[global_id] if self.lambdas is not None else None
+        l = self.lambdas[global_id] 
 
         return emb, l

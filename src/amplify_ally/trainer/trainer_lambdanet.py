@@ -71,12 +71,11 @@ class LambdaNetTrainer:
         self.dtype = dtype 
         self.device = device
         self.resume = resume
-        self.ckpt_path_save = os.path.join(save_dir, f"Round_{rd}", "reg_ckpt.pt")
-        self.ckpt_path_load = os.path.join(save_dir, f"Round_{rd-1}", "reg_ckpt.pt")
+        self.ckpt_path_save = os.path.join(save_dir, f"round_{rd}", "reg_ckpt.pt")
+        self.ckpt_path_load = os.path.join(save_dir, f"round_{rd-1}", "reg_ckpt.pt")
 
         ckpt_exists = (
-            rd is not None
-            and rd > 1
+            rd > 1
             and os.path.isfile(self.ckpt_path_load)
             and os.path.getsize(self.ckpt_path_load) > 0
         )
@@ -125,7 +124,7 @@ class LambdaNetTrainer:
         lambda_pred = []
 
         with torch.no_grad():
-            for x in dataloader:
+            for x, _ in dataloader:
                 x = x.to(self.device)
                 out = self.model(x).view(-1)
                 lambda_pred.append(out)
@@ -175,7 +174,7 @@ class LambdaNetTrainer:
     ) -> torch.Tensor:
         if write_to_hard_drive:
             loaders = get_reg_dataloaders_from_saved_emb_set(
-                emb_path=emb_dir,
+                emb_dir=emb_dir,
                 lambdas=self.lambdas,
                 flag=self.flag,
                 batch_size=self.per_device_batch_size,

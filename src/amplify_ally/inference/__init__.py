@@ -4,4 +4,4 @@ from .human_text import (
     compare_sequences_to_out_of_sample_average,
     compare_sequences_to_human_text,
 )
-from .emb_extraction import get_embedding, pooling
+from .emb_extraction import get_embedding, pooling, save_embedding

@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_iter_emb
+#SBATCH --job-name=testing_emb_save2
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=10:00
+#SBATCH --time=1:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -68,7 +68,7 @@ srun \
 	trainer.save_steps=5 \
 	strategy.n_steps=10 \
 	strategy.slack_lr=1e-3 \
-	strategy.n_iters=1 \
+	strategy.n_iters=2 \
 	strategy.n_clusters=1 \
 	strategy.epsilon=2 \
 	strategy.swap=True \

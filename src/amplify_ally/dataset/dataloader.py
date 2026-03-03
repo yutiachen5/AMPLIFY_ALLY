@@ -121,7 +121,6 @@ def get_emb_dataloader(
     dataset: torch.utils.data.Dataset, 
     collator: Callable,
     per_device_batch_size_emb: int,
-    num_workers: int,
     **kwargs,
 ) -> DataLoader:
     return DataLoader(
@@ -129,12 +128,10 @@ def get_emb_dataloader(
         batch_size=per_device_batch_size_emb,
         shuffle=False,
         collate_fn=collator,
-        num_workers=num_workers,
-        prefetch_factor=2,
+        num_workers=2,
         pin_memory=True,
-        persistent_workers=False,
+        prefetch_factor=2
     )
-
 
 def get_reg_dataloaders_from_saved_emb_set(
     emb_dir: str,
@@ -166,7 +163,7 @@ def get_reg_dataloaders_from_saved_emb_set(
         loader_kwargs["prefetch_factor"] = 2
 
     if kmeans:
-        kmeans_ds =  SavedEmbDataset(emb_dir, val_size, seed, split="kmeans")
+        kmeans_ds =  SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="kmeans")
         return {"kmeans": DataLoader(kmeans_ds, **loader_kwargs)}
     else:
         train_ds = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="train")
@@ -241,11 +238,13 @@ def update_mlm_dataloader(
     idx_order: np.array,
     lambdas: torch.Tensor,
     seed: int,
+    emb_dir: str,
     n_clusters: int,
     per_device_batch_size_kmeans: int,
     per_device_batch_size: int,
     num_workers: int,
     epsilon: int,
+    write_to_hard_drive: bool,
     **kwargs,
 ) -> DataLoader:
     """Update the order of samples in the dataloader according to informativeness and diversity
@@ -276,40 +275,41 @@ def update_mlm_dataloader(
             persistent_workers=False,
         )
 
+    kmeans_mdl = MiniBatchKMeans(
+        n_clusters=n_clusters, 
+        random_state=seed, 
+        batch_size=per_device_batch_size_kmeans, 
+        n_init='auto',
+    )
+
     if write_to_hard_drive:
         loader = get_reg_dataloaders_from_saved_emb_set(
-            emb_path=emb_dir,
+            emb_dir=emb_dir,
             lambdas=lambdas,
             flag=np.zeros(len(lambdas)), # flag, val_size and seed do not matter here
             val_size=0.0, 
             seed=seed,
             batch_size=per_device_batch_size_kmeans,
-            num_workers=num_workers
+            num_workers=num_workers,
+            kmeans=True,
         )
 
         # fit Kmeans
         for emb, _ in loader["kmeans"]:
-            kmeans.partial_fit(emb)
+            kmeans_mdl.partial_fit(emb.to(torch.float32).numpy())
 
         # prediction
         clusters = []
         for emb, _ in loader["kmeans"]:
-            clusters.extend(kmeans.predict(emb))
-
+            clust_pred = kmeans_mdl.predict(emb.to(torch.float32).numpy())
+            clusters.extend(clust_pred)
     else:
         clusters = []
-        kmeans = MiniBatchKMeans(
-            n_clusters=n_clusters, 
-            random_state=seed, 
-            batch_size=per_device_batch_size_kmeans, 
-            n_init='auto',
-        )
-
         X = embeddings.detach().to(torch.float32).cpu().numpy()
-        clusters = kmeans.fit_predict(X)
+        clusters = kmeans_mdl.fit_predict(X)
 
-    del X, embeddings
-    gc.collect()
+        del X, embeddings
+        gc.collect()
     
     # lambdas is global-id axis; align it to the embedding/cluster order (which is idx_order)
     lambdas_aligned = lambdas.to(torch.float32).numpy()[idx_order]   # now aligned with idx_order

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.60M_mdoel.350M_niter.1_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_epoch.200_patience.20_seed.100
+#SBATCH --job-name=ALLY_nsamples.60M_mdoel.120M_niter.2_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_seed.100
 #SBATCH -A h200ea
 #SBATCH -p h200ea
 #SBATCH --gres=gpu:h200:1
@@ -69,7 +69,7 @@ srun \
 	trainer.save_steps=10000 \
 	strategy.n_steps=20000 \
 	strategy.slack_lr=0 \
-	strategy.n_iters=1 \
+	strategy.n_iters=2 \
 	strategy.n_clusters=2048 \
 	strategy.epsilon=1.9 \
 	strategy.swap=True \

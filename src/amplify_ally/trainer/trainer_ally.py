@@ -24,7 +24,7 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..inference import get_embedding, pooling
+from ..inference import get_embedding, pooling, save_embedding
 from .trainer_lambdanet import LambdaNetTrainer
 
 
@@ -222,19 +222,21 @@ def trainer_ally(cfg: DictConfig) -> None:
         print(f"#### Round {rd} ####")
 
         if rd > 1:
-            rd_save_dir = os.path.join(cfg.trainer.dir, f"Round_{rd-1}")
+            # Make saving dir 
+            rd_save_dir = os.path.join(cfg.trainer.dir, f"round_{rd-1}")
             os.makedirs(rd_save_dir, exist_ok=True)
-
             # Rebuild train data loader according to the order of informativeness and diversity
             if constrained:
-                embeddings = get_embedding(
-                    model=model, 
-                    dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
-                    device=accelerator.device,
-                    dtype=dtype_reg_head,
-                    save_dir=emb_save_dir,
-                    **cfg.strategy
-                )
+                # Extract embeddings after the first round and replace the old emb with new one in later rds
+                if rd == 2 or cfg.strategy.write_to_hard_drive == False:
+                    embeddings = get_embedding(
+                        model=model, 
+                        dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
+                        device=accelerator.device,
+                        dtype=dtype_reg_head,
+                        save_dir=emb_save_dir,
+                        **cfg.strategy
+                    )
 
                 print("Lmabdanet training for constrained learning")
                 lambdanet_trainer = LambdaNetTrainer(
@@ -248,7 +250,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     flag=flag, 
                     seed=cfg.seed,
                     accelerator=accelerator, 
-                    save_dir=rd_save_dir, 
+                    save_dir=cfg.trainer.dir, 
                     dtype=dtype_reg_head,
                     **cfg.strategy
                 )
@@ -265,6 +267,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     idx_order=idx_order, 
                     lambdas=lambdas, 
                     seed=cfg.seed,
+                    emb_dir=emb_save_dir,
                     **cfg.strategy, 
                     **cfg.trainer.train,
                 )
@@ -284,7 +287,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 print("Dataloader updated.")
 
-                del embeddings
                 del lambdanet_trainer
                 del df, idx_np, flag_np, actual_np, pred_np
                 gc.collect()
@@ -331,7 +333,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                             out = model(x, pad_mask, output_hidden_states=True)
                             logits = out.logits
                             emb = out.hidden_states[-1]
-                            torch.save(os.path.join(emb_save_dir, f"seq_{global_id}.pt"), pooling(emb, pad_mask, **cfg.strategy))
+                            pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=dtype_reg_head, **cfg.strategy)
+                            save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
                         else:
                             out = model(x, pad_mask) 
                             logits = out.logits
@@ -403,7 +406,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                         out = model(x, pad_mask, output_hidden_states=True)
                         logits = out.logits
                         emb = out.hidden_states[-1]
-                        torch.save(os.path.join(emb_save_dir, f"seq_{global_id}.pt"), pooling(emb, pad_mask, **cfg.strategy))
+                        pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=dtype_reg_head, **cfg.strategy)
+                        save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
                     else:
                         out = model(x, pad_mask) 
                         logits = out.logits
