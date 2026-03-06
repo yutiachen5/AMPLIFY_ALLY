@@ -4,6 +4,9 @@ import os
 import numpy as np
 from tqdm import tqdm
 
+from typing import List
+
+
 def pooling(
     emb: torch.Tensor,
     pad_mask: torch.Tensor,
@@ -26,14 +29,13 @@ def pooling(
     return pooled_emb.to(dtype).detach().cpu()
 
 def save_embedding(
-    global_id: torch.Tensor,
+    global_id: list,
     pooled_emb: torch.Tensor,
     emb_save_dir: str
 ):
-    gid_list = global_id.detach().cpu().tolist()
-    for i, gid in enumerate(gid_list):
-        out_file = os.path.join(emb_save_dir, f"seq_{int(gid)}.pt")
-        torch.save(pooled_emb[i], out_file)
+    for i, gid in enumerate(global_id):
+        out_file = os.path.join(emb_save_dir, f"seq_{int(gid)}.npy")
+        np.save(out_file, pooled_emb[i])
 
 def get_embedding(
     model: torch.nn.Module,
@@ -45,7 +47,7 @@ def get_embedding(
     pooling_method: str = "mean",
     **kwargs,
 ) -> torch.Tensor | None:
-    """Get pooled (sequence-level) embeddings for each sample in dataloader."""
+    """Get sequence-level embeddings for each sample in dataloader."""
 
     pbar = tqdm(
         desc="Extract embeddings",
@@ -63,13 +65,13 @@ def get_embedding(
             pad_mask = pad_mask.to(device)
 
             emb = model(x, pad_mask, output_hidden_states=True).hidden_states[-1]  # [B, L, D]
-
             pooled_emb = pooling(
                 emb=emb,
                 pad_mask=pad_mask,
                 pooling_method=pooling_method,
                 dtype=dtype,
             ) 
+            global_id = global_id.detach().cpu().tolist()
 
             if write_to_hard_drive:
                 save_embedding(global_id, pooled_emb, save_dir)

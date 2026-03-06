@@ -22,7 +22,7 @@ The repository functions can be built into a Python virtual environment as:
 python3 -m venv env && \
 source env/bin/activate && \
 python3 -m pip install --upgrade pip && \
-python3 -m pip install --editable $REPO_DIR[dev]
+python3 -m pip install --editable /hpc/group/naderilab/eleanor/AMPLIFY_ALLY[dev]
 ```
 
 Note that `[dev]` includes the necessary dependencies to verify the installation and build the Sphinx documentation.

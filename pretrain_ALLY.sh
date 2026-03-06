@@ -64,7 +64,7 @@ srun \
 	trainer.max_steps=100000 \
 	scheduler.final_step=900000 \
 	trainer.train.per_device_batch_size=256 \
-	trainer.validation.per_device_batch_size=256 \
+	trainer.validation.per_device_batch_size=512 \
 	trainer.gradient_accumulation_steps=2 \
 	trainer.save_steps=10000 \
 	strategy.n_steps=20000 \
@@ -78,5 +78,7 @@ srun \
 	strategy.max_epochs=200 \
 	strategy.patience=20 \
 	strategy.per_device_batch_size_emb=2048 \
+	strategy.per_device_batch_size_kmeans=2048 \
+	strategy.per_device_batch_size_lambdanet=1024 \
 	seed=100
 "

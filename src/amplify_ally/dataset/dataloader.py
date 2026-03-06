@@ -141,6 +141,7 @@ def get_reg_dataloaders_from_saved_emb_set(
     val_size: float = 0.2,
     seed: int = 42,
     num_workers: int = 0,
+    dtype: torch.dtype = torch.float32,
     kmeans: bool = False,
 ) -> Dict[str, DataLoader]:
     """
@@ -163,12 +164,12 @@ def get_reg_dataloaders_from_saved_emb_set(
         loader_kwargs["prefetch_factor"] = 2
 
     if kmeans:
-        kmeans_ds =  SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="kmeans")
+        kmeans_ds =  SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="kmeans")
         return {"kmeans": DataLoader(kmeans_ds, **loader_kwargs)}
     else:
-        train_ds = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="train")
-        val_ds   = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="val")
-        test_ds  = SavedEmbDataset(emb_dir, lambdas, flag, val_size, seed, split="test")
+        train_ds = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="train")
+        val_ds   = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="val")
+        test_ds  = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="test")
         return {
             "train": DataLoader(train_ds, **loader_kwargs),
             "val":   DataLoader(val_ds, **loader_kwargs),
@@ -237,14 +238,15 @@ def update_mlm_dataloader(
     embeddings: torch.Tensor,
     idx_order: np.array,
     lambdas: torch.Tensor,
-    seed: int,
     emb_dir: str,
-    n_clusters: int,
-    per_device_batch_size_kmeans: int,
-    per_device_batch_size: int,
-    num_workers: int,
-    epsilon: int,
-    write_to_hard_drive: bool,
+    seed: int = 42,
+    n_clusters: int = 512,
+    per_device_batch_size_kmeans: int = 1024,
+    per_device_batch_size: int = 1024,
+    num_workers: int = 2,
+    epsilon: int = 2,
+    write_to_hard_drive: bool = True,
+    dtype: torch.dtype = torch.float32,
     **kwargs,
 ) -> DataLoader:
     """Update the order of samples in the dataloader according to informativeness and diversity
@@ -292,16 +294,17 @@ def update_mlm_dataloader(
             batch_size=per_device_batch_size_kmeans,
             num_workers=num_workers,
             kmeans=True,
+            dtype=dtype
         )
 
         # fit Kmeans
         for emb, _ in loader["kmeans"]:
-            kmeans_mdl.partial_fit(emb.to(torch.float32).numpy())
+            kmeans_mdl.partial_fit(emb)
 
         # prediction
         clusters = []
         for emb, _ in loader["kmeans"]:
-            clust_pred = kmeans_mdl.predict(emb.to(torch.float32).numpy())
+            clust_pred = kmeans_mdl.predict(emb)
             clusters.extend(clust_pred)
     else:
         clusters = []

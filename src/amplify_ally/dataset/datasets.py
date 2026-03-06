@@ -127,6 +127,7 @@ class SavedEmbDataset(Dataset):
         emb_dir: str,
         lambdas: torch.Tensor,
         flag: np.ndarray,
+        dtype: torch.dtype = torch.float32,
         val_size: float = 0.2,
         seed: int = 42,
         split: str = "train",
@@ -134,6 +135,8 @@ class SavedEmbDataset(Dataset):
     ):
         self.emb_dir = emb_dir
         self.lambdas = lambdas
+        self.split = split
+        self.dtype = dtype
         idx = np.arange(len(lambdas))
 
         if split == "kmeans":
@@ -160,9 +163,13 @@ class SavedEmbDataset(Dataset):
         return int(len(self.active_idx))
 
     def _load_emb(self, global_id: int) -> torch.Tensor:
-        emb_path = os.path.join(self.emb_dir, f"seq_{int(global_id)}.pt")
-        emb = torch.load(emb_path, map_location="cpu")  
-        return emb
+        emb_path = os.path.join(self.emb_dir, f"seq_{int(global_id)}.npy")
+        emb = np.load(emb_path)  
+        
+        if self.split != "kmeans":
+            return torch.from_numpy(emb).to(dtype=self.dtype)
+        else: 
+            return emb
 
     def __getitem__(self, i: int):
         global_id = int(self.active_idx[i])

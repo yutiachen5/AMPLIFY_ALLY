@@ -233,7 +233,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         model=model, 
                         dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
                         device=accelerator.device,
-                        dtype=dtype_reg_head,
+                        dtype=torch.float32, # cannot be bf16 for saving in .npy format
                         save_dir=emb_save_dir,
                         **cfg.strategy
                     )
@@ -257,7 +257,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas = lambdanet_trainer.get_lambdas(emb_dir=emb_save_dir, **cfg.strategy) # pred
+                lambdas = lambdanet_trainer.get_lambdas(emb_dir=emb_save_dir, dtype=dtype_pad_mask, **cfg.strategy) # pred
 
                 # Update dataloder based on actual and predicted lambda
                 idx_order, dataloader = update_mlm_dataloader(
@@ -268,6 +268,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     lambdas=lambdas, 
                     seed=cfg.seed,
                     emb_dir=emb_save_dir,
+                    dtype=dtype_pad_mask,
                     **cfg.strategy, 
                     **cfg.trainer.train,
                 )
@@ -301,6 +302,9 @@ def trainer_ally(cfg: DictConfig) -> None:
                     embeddings=embeddings, 
                     idx_order=idx_order, 
                     lambdas=lambdas, 
+                    seed=cfg.seed,
+                    emb_dir=emb_save_dir,
+                    dtype=dtype_pad_mask,
                     **cfg.strategy, 
                     **cfg.trainer.train,
                 )
@@ -333,7 +337,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                             out = model(x, pad_mask, output_hidden_states=True)
                             logits = out.logits
                             emb = out.hidden_states[-1]
-                            pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=dtype_reg_head, **cfg.strategy)
+                            pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=torch.float32, **cfg.strategy)
                             save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
                         else:
                             out = model(x, pad_mask) 
@@ -406,7 +410,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         out = model(x, pad_mask, output_hidden_states=True)
                         logits = out.logits
                         emb = out.hidden_states[-1]
-                        pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=dtype_reg_head, **cfg.strategy)
+                        pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=torch.float32, **cfg.strategy)
                         save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
                     else:
                         out = model(x, pad_mask) 

@@ -163,6 +163,7 @@ class LambdaNetTrainer:
     def get_lambdas(
         self,
         emb_dir: str,
+        dtype: torch.dtype = torch.float32,
         val_size: float = 0.2,
         seed: int = 42,
         max_epochs: int = 100,
@@ -180,7 +181,8 @@ class LambdaNetTrainer:
                 batch_size=self.per_device_batch_size,
                 val_size=val_size,
                 seed=seed,
-                num_workers=num_workers
+                num_workers=num_workers,
+                dtype=dtype
             )
         else:
             loaders = get_reg_dataloaders_from_in_memory_emb_set(
