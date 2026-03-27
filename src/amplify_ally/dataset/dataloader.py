@@ -11,6 +11,7 @@ import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.preprocessing import MinMaxScaler
 
+from tqdm import tqdm
 from typing import List, Callable, Dict
 from collections import defaultdict
 
@@ -128,7 +129,7 @@ def get_emb_dataloader(
         batch_size=per_device_batch_size_emb,
         shuffle=False,
         collate_fn=collator,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True,
         prefetch_factor=2
     )
@@ -140,7 +141,7 @@ def get_reg_dataloaders_from_saved_emb_set(
     batch_size: int,
     val_size: float = 0.2,
     seed: int = 42,
-    num_workers: int = 0,
+    num_workers: int = 4,
     dtype: torch.dtype = torch.float32,
     kmeans: bool = False,
 ) -> Dict[str, DataLoader]:
@@ -168,8 +169,11 @@ def get_reg_dataloaders_from_saved_emb_set(
         return {"kmeans": DataLoader(kmeans_ds, **loader_kwargs)}
     else:
         train_ds = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="train")
+        print("reg train loader initialized")
         val_ds   = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="val")
+        print("reg val loader initialized")
         test_ds  = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="test")
+        print("reg test loader initialized")
         return {
             "train": DataLoader(train_ds, **loader_kwargs),
             "val":   DataLoader(val_ds, **loader_kwargs),
@@ -298,8 +302,18 @@ def update_mlm_dataloader(
         )
 
         # fit Kmeans
+        pbar = tqdm(
+            desc="Kmeans clustering",
+            unit="batch",
+            initial=0,
+            total=len(loader["kmeans"]),
+        )
+
         for emb, _ in loader["kmeans"]:
             kmeans_mdl.partial_fit(emb)
+            pbar.update(1)
+            
+        pbar.close()
 
         # prediction
         clusters = []

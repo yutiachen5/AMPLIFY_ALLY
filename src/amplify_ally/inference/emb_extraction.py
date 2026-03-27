@@ -7,6 +7,38 @@ from tqdm import tqdm
 from typing import List
 
 
+def update_embedding(
+    global_id: list,
+    pooled_emb: torch.Tensor,
+    emb_save_dir: str,
+    shard_size: int = 1_000_000,
+    **kwargs,
+):
+    from collections import defaultdict
+
+    # group by shard so each file is opened once per call
+    shard_updates: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for i, gid in enumerate(global_id):
+        shard_id  = gid // shard_size
+        local_idx = gid % shard_size
+        shard_updates[shard_id].append((local_idx, gid, i))
+
+    for shard_id, entries in shard_updates.items():
+        emb_path = os.path.join(emb_save_dir, f"shard_{shard_id:04d}.npy")
+        ids_path = os.path.join(emb_save_dir, f"shard_{shard_id:04d}_ids.npy")
+
+        ids = np.load(ids_path)
+        emb = np.load(emb_path, mmap_mode="r+")
+
+        for local_idx, gid, i in entries:
+            assert ids[local_idx] == gid, (
+                f"ID mismatch at shard={shard_id} local_idx={local_idx}: "
+                f"expected {gid}, got {ids[local_idx]}."
+            )
+            emb[local_idx] = pooled_emb[i].numpy() if isinstance(pooled_emb, torch.Tensor) else pooled_emb[i]
+
+        emb.flush()  # once per shard
+
 def pooling(
     emb: torch.Tensor,
     pad_mask: torch.Tensor,
@@ -28,14 +60,22 @@ def pooling(
 
     return pooled_emb.to(dtype).detach().cpu()
 
+    
 def save_embedding(
-    global_id: list,
-    pooled_emb: torch.Tensor,
-    emb_save_dir: str
+    shard_id: int,
+    all_ids: list,
+    all_emb: list[np.ndarray],
+    emb_save_dir: str,
 ):
-    for i, gid in enumerate(global_id):
-        out_file = os.path.join(emb_save_dir, f"seq_{int(gid)}.npy")
-        np.save(out_file, pooled_emb[i])
+    """Save one shard: a consolidated emb array + companion ids array."""
+    emb_array = np.concatenate(all_emb, axis=0)          # [N_shard, D]
+    ids_array = np.array(all_ids, dtype=np.int64)         # [N_shard]
+ 
+    emb_path = os.path.join(emb_save_dir, f"shard_{shard_id:04d}.npy")
+    ids_path = os.path.join(emb_save_dir, f"shard_{shard_id:04d}_ids.npy")
+ 
+    np.save(emb_path, emb_array)
+    np.save(ids_path, ids_array)
 
 def get_embedding(
     model: torch.nn.Module,
@@ -45,12 +85,17 @@ def get_embedding(
     write_to_hard_drive,
     dtype: torch.dtype = torch.float32,
     pooling_method: str = "mean",
+    has_emb: bool = False,
+    shard_size: int = 1_000_000,
     **kwargs,
 ) -> torch.Tensor | None:
     """Get sequence-level embeddings for each sample in dataloader."""
+    if has_emb:
+        print("skip emb generation, loading emb from given path")
+        return None
 
     pbar = tqdm(
-        desc="Extract embeddings",
+        desc="Extracting embeddings",
         unit="batch",
         initial=0,
         total=len(dataloader),
@@ -58,6 +103,19 @@ def get_embedding(
 
     model.eval()
     embedding = []
+
+    # sharding
+    shard_id = 0
+    shard_emb_buf: list[np.ndarray] = []
+    shard_ids_buf: list = []
+
+    def flush_shard():
+        nonlocal shard_id
+        if shard_ids_buf:
+            save_embedding(shard_id, shard_ids_buf, shard_emb_buf, save_dir)
+            shard_id += 1
+            shard_emb_buf.clear()
+            shard_ids_buf.clear()
 
     with torch.no_grad():
         for global_id, x, y, pad_mask in dataloader:
@@ -74,10 +132,19 @@ def get_embedding(
             global_id = global_id.detach().cpu().tolist()
 
             if write_to_hard_drive:
-                save_embedding(global_id, pooled_emb, save_dir)
+                # save_embedding(global_id, pooled_emb, save_dir)
+                shard_emb_buf.append(pooled_emb.numpy())
+                shard_ids_buf.extend(global_id)
+ 
+                if len(shard_ids_buf) >= shard_size:
+                    flush_shard()
             else:
                 embedding.append(pooled_emb)
             pbar.update(1)
+
+    # flush any remaining samples into a final partial shard
+    if write_to_hard_drive:
+        flush_shard()
 
     model.train()
     pbar.close()

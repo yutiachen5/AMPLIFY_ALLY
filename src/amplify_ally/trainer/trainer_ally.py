@@ -2,7 +2,6 @@ import os
 import gc
 import re
 import sys
-import pytz
 import torch
 import signal
 import shutil
@@ -16,6 +15,7 @@ from omegaconf import OmegaConf, DictConfig
 from accelerate import Accelerator, skip_first_batches
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
+from safetensors.torch import load_file
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
@@ -24,7 +24,7 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..inference import get_embedding, pooling, save_embedding
+from ..inference import get_embedding, pooling, save_embedding, update_embedding
 from .trainer_lambdanet import LambdaNetTrainer
 
 
@@ -130,6 +130,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Embedding model, regression head, optimizer, and learning rate scheduler
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
+
     reg = LambdaNet(input_dim=cfg.model.hidden_size)
     optimizer = get_optimizer(model, **cfg.optimizer)
     optimizer_reg = get_optimizer(reg, **cfg.strategy)
@@ -274,22 +275,22 @@ def trainer_ally(cfg: DictConfig) -> None:
                 )
 
                 # np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
-                idx_np = np.asarray(idx_order, dtype=np.int64)
-                flag_np = np.asarray(flag)
-                actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
-                pred_np    = lambdas.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
-                df = pd.DataFrame({
-                    "idx": idx_np,
-                    "flag": flag_np[idx_np],
-                    "lambda_act": actual_np[idx_np],
-                    "lambda_pred": pred_np[idx_np],
-                })
-                df.to_csv(os.path.join(rd_save_dir, "lambdas.csv"), index=False, float_format="%.8f")
+                # idx_np = np.asarray(idx_order, dtype=np.int64)
+                # flag_np = np.asarray(flag)
+                # actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
+                # pred_np    = lambdas.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
+                # df = pd.DataFrame({
+                #     "idx": idx_np,
+                #     "flag": flag_np[idx_np],
+                #     "lambda_act": actual_np[idx_np],
+                #     "lambda_pred": pred_np[idx_np],
+                # })
+                # df.to_csv(os.path.join(rd_save_dir, "lambdas.csv"), index=False, float_format="%.8f")
 
                 print("Dataloader updated.")
 
                 del lambdanet_trainer
-                del df, idx_np, flag_np, actual_np, pred_np
+                # del df, idx_np, flag_np, actual_np, pred_np
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -336,9 +337,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                         if iteration == cfg.strategy.n_iters - 1 and rd > 1:
                             out = model(x, pad_mask, output_hidden_states=True)
                             logits = out.logits
-                            emb = out.hidden_states[-1]
-                            pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=torch.float32, **cfg.strategy)
-                            save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
+                            pooled_emb = pooling(out.hidden_states[-1], pad_mask, torch.float32, **cfg.strategy)
+                            update_embedding(global_id, pooled_emb, emb_save_dir, **cfg.strategy)
                         else:
                             out = model(x, pad_mask) 
                             logits = out.logits
@@ -409,9 +409,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     if iteration == cfg.strategy.n_iters - 1 and rd > 1:
                         out = model(x, pad_mask, output_hidden_states=True)
                         logits = out.logits
-                        emb = out.hidden_states[-1]
-                        pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=torch.float32, **cfg.strategy)
-                        save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
+                        pooled_emb = pooling(out.hidden_states[-1], pad_mask, torch.float32, **cfg.strategy)
+                        update_embedding(global_id, pooled_emb, emb_save_dir, **cfg.strategy)
                     else:
                         out = model(x, pad_mask) 
                         logits = out.logits

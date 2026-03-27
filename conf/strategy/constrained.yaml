@@ -28,3 +28,5 @@ scaler: min-max
 # embedding pooling
 pooling_method: mean
 write_to_hard_drive: True
+has_emb: False
+shard_size: 1_000_000

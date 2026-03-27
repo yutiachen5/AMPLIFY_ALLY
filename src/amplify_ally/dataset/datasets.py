@@ -110,17 +110,6 @@ class InMemoryEmbDataset(Dataset):
         return self.x_data.shape[0]
 
 
-# class EmbDataset(Dataset):
-#     def __init__(self, emb):
-#         self.emb = emb
-
-#     def __len__(self):
-#         return len(self.emb)
-
-#     def __getitem__(self, i):
-#         return self.emb[i]
-
-
 class SavedEmbDataset(Dataset):
     def __init__(
         self,
@@ -131,50 +120,69 @@ class SavedEmbDataset(Dataset):
         val_size: float = 0.2,
         seed: int = 42,
         split: str = "train",
+        shard_size: int = 1_000_000,
         **kwargs,
     ):
         self.emb_dir = emb_dir
         self.lambdas = lambdas
         self.split = split
         self.dtype = dtype
-        idx = np.arange(len(lambdas))
+        self.shard_size = shard_size
+
+        n = len(lambdas)
 
         if split == "kmeans":
-            self.active_idx = idx
+            self.active_idx = np.arange(n, dtype=np.int64)
+            return
+
+        test_idx = np.flatnonzero(flag < 1).astype(np.int64)
+        train_val_idx = np.flatnonzero(flag >= 1).astype(np.int64)
+
+        rng = np.random.default_rng(seed)
+        n_val = int(round(len(train_val_idx) * val_size))
+
+        perm = rng.permutation(len(train_val_idx))
+        val_pos = perm[:n_val]
+        train_pos = perm[n_val:]
+
+        val_idx = train_val_idx[val_pos]
+        train_idx = train_val_idx[train_pos]
+
+        if split == "train":
+            self.active_idx = train_idx
+        elif split == "val":
+            self.active_idx = val_idx
+        elif split == "test":
+            self.active_idx = test_idx
         else:
-            test_idx = idx[flag < 1]
-            train_val_idx = idx[flag >= 1]
-
-            rng = np.random.default_rng(seed)
-            n_val = int(round(len(train_val_idx) * val_size))
-            n_val = min(n_val, len(train_val_idx))
-
-            val_idx = rng.choice(train_val_idx, size=n_val, replace=False)
-            train_idx = np.array([j for j in train_val_idx if j not in set(val_idx.tolist())], dtype=np.int64)
-
-            if split == "train":
-                self.active_idx = train_idx
-            elif split == "val":
-                self.active_idx = val_idx
-            elif split == "test":
-                self.active_idx = test_idx
+            raise ValueError(f"Unknown split: {split}")
 
     def __len__(self):
         return int(len(self.active_idx))
 
-    def _load_emb(self, global_id: int) -> torch.Tensor:
-        emb_path = os.path.join(self.emb_dir, f"seq_{int(global_id)}.npy")
-        emb = np.load(emb_path)  
-        
+    def _load_emb(self, global_id: int):
+        shard_id  = global_id // self.shard_size
+        local_idx = global_id % self.shard_size
+
+        emb_path = os.path.join(self.emb_dir, f"shard_{shard_id:04d}.npy")
+        ids_path = os.path.join(self.emb_dir, f"shard_{shard_id:04d}_ids.npy")
+
+        ids = np.load(ids_path)
+        assert ids[local_idx] == global_id, (
+            f"ID mismatch at shard={shard_id} local_idx={local_idx}: "
+            f"expected {global_id}, got {ids[local_idx]}."
+        )
+
+        emb = np.load(emb_path, mmap_mode="r")[local_idx].copy()
+
         if self.split != "kmeans":
             return torch.from_numpy(emb).to(dtype=self.dtype)
-        else: 
-            return emb
+
+        return emb
 
     def __getitem__(self, i: int):
         global_id = int(self.active_idx[i])
-
         emb = self._load_emb(global_id)
-        l = self.lambdas[global_id] 
-
+        l = self.lambdas[global_id]
+        
         return emb, l

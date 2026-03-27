@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import re
 import numpy as np
-from copy import deepcopy
+from tqdm import tqdm
 from accelerate import Accelerator
 
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
@@ -89,7 +89,7 @@ class LambdaNetTrainer:
         mask = (flag[idx] >= 1)
         self.trained_idx = torch.as_tensor(idx[mask], dtype=torch.long)     # global ids
         self.untrained_idx = torch.as_tensor(idx[~mask], dtype=torch.long)  # global ids
-        self.trained_lambdas = lambdas[self.trained_idx].to(self.device) 
+        self.trained_lambdas = lambdas[self.trained_idx]
         
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
@@ -123,21 +123,30 @@ class LambdaNetTrainer:
         self.model.eval()
         lambda_pred = []
 
+        pbar = tqdm(
+            desc="Predicting lambdas",
+            unit="batch",
+            initial=0,
+            total=len(dataloader),
+        )
+
         with torch.no_grad():
             for x, _ in dataloader:
                 x = x.to(self.device)
                 out = self.model(x).view(-1)
                 lambda_pred.append(out)
+                pbar.update(1)
 
-        return torch.cat(lambda_pred, dim=0)
+        pbar.close()
+        return torch.cat(lambda_pred, dim=0).detach().cpu()
 
     def reconstruct_lambdas(self, pred_lambdas: torch.Tensor) -> torch.Tensor:
-        full_lambdas = torch.zeros(self.trained_idx.shape[0] + self.untrained_idx.shape[0], device=self.device, dtype=self.dtype)
+        full_lambdas = torch.zeros(self.trained_idx.shape[0] + self.untrained_idx.shape[0], dtype=self.dtype)
 
-        full_lambdas[self.trained_idx] = self.trained_lambdas.detach()
+        full_lambdas[self.trained_idx] = self.trained_lambdas
         full_lambdas[self.untrained_idx] = pred_lambdas
 
-        return full_lambdas.detach().cpu()
+        return full_lambdas
 
     def save_reg_ckpt(self, reg, optimizer_reg, ckpt_path):
         if hasattr(self.accelerator, "is_main_process") and not self.accelerator.is_main_process:
@@ -171,8 +180,11 @@ class LambdaNetTrainer:
         patience: int = 3,
         num_workers: int = 4,
         write_to_hard_drive: bool = True,
+        has_emb: bool = False,
         **kwargs,
     ) -> torch.Tensor:
+        if has_emb: # overwrite the emb dir with saved emb dir
+            emb_dir = "/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/testing_sharding/embeddings"
         if write_to_hard_drive:
             loaders = get_reg_dataloaders_from_saved_emb_set(
                 emb_dir=emb_dir,
@@ -234,6 +246,7 @@ class LambdaNetTrainer:
         # pred_lambdas = pred_lambdas * scale + y_min     
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
+        print("Lambda prediction completed.")
 
         if self.resume:
             self.save_reg_ckpt(self.model, self.optimizer, self.ckpt_path_save)
