@@ -78,6 +78,7 @@ srun -u \
     strategy.per_device_batch_size_lambdanet=1024 \
     strategy.has_emb=True \
     strategy.print_every=1 \
+    strategy.fit_subset_size=2000000 \
     seed=100 \
     dataset=demo
 "

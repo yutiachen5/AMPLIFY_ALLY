@@ -152,5 +152,5 @@ def get_embedding(
     if write_to_hard_drive:
         return None
     else:
-        embedding = torch.cat(embedding, dim=0).to(dtype=dtype)  # [n_samples, emb_dim] on CPU
+        embedding = torch.cat(embedding, dim=0) # [n_samples, emb_dim] on CPU
         return embedding

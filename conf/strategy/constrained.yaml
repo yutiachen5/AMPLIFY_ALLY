@@ -8,7 +8,6 @@ dual_lr_gamma: 0.9
 dual_lr_stepsize: 500
 alpha: 0.01
 slack_lr: 0.01
-n_clusters: 128
 n_steps: 8000
 n_iters: 4
 swap: False
@@ -17,16 +16,20 @@ swap: False
 val_size: 0.2 
 max_epochs: 40 
 per_device_batch_size_lambdanet: 512
-per_device_batch_size_kmeans: 512
-per_device_batch_size_emb: 1024
 optimizer_lr: 1e-4
 print_every: 1
 resume: True
 patience: 6
 scaler: min-max
 
-# embedding pooling
+# embedding extraction
+per_device_batch_size_emb: 1024
 pooling_method: mean
 write_to_hard_drive: True
 has_emb: False
 shard_size: 1_000_000
+
+# KMeans clustering
+fit_subset_size: 2_000_000
+per_device_batch_size_kmeans: 512
+n_clusters: 128

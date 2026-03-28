@@ -26,6 +26,7 @@ from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..inference import get_embedding, pooling, save_embedding, update_embedding
 from .trainer_lambdanet import LambdaNetTrainer
+from .trainer_kmeans import KMeansTrainer
 
 
 def evaluate(
@@ -234,14 +235,13 @@ def trainer_ally(cfg: DictConfig) -> None:
                         model=model, 
                         dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
                         device=accelerator.device,
-                        dtype=torch.float32, # cannot be bf16 for saving in .npy format
+                        dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask, # cannot be bf16 for saving in .npy format
                         save_dir=emb_save_dir,
                         **cfg.strategy
                     )
 
-                print("Lmabdanet training for constrained learning")
                 lambdanet_trainer = LambdaNetTrainer(
-                    rd=rd - 1, # -1 since it's based on the previous rd
+                    rd=rd-1, # -1 since it's based on the previous rd
                     model=reg, 
                     optimizer=optimizer_reg, 
                     device=accelerator.device, 
@@ -255,13 +255,11 @@ def trainer_ally(cfg: DictConfig) -> None:
                     dtype=dtype_reg_head,
                     **cfg.strategy
                 )
-
-                # Update lambda value for the next rd
+                # get lambda values
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
                 lambdas = lambdanet_trainer.get_lambdas(emb_dir=emb_save_dir, dtype=dtype_pad_mask, **cfg.strategy) # pred
 
-                # Update dataloder based on actual and predicted lambda
-                idx_order, dataloader = update_mlm_dataloader(
+                kmeans_trainer = KMeansTrainer(
                     dataset=dataset,
                     collator=collator,
                     embeddings=embeddings, 
@@ -273,6 +271,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy, 
                     **cfg.trainer.train,
                 )
+                # update dataloader based on diversity and informativeness
+                idx_order, dataloader = kmeans_trainer.train_and_update_dataloader()
 
                 # np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
                 # idx_np = np.asarray(idx_order, dtype=np.int64)
@@ -289,7 +289,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 print("Dataloader updated.")
 
-                del lambdanet_trainer
+                del lambdanet_trainer, kmeans_trainer
                 # del df, idx_np, flag_np, actual_np, pred_np
                 gc.collect()
                 if torch.cuda.is_available():
@@ -297,7 +297,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             else:
                 embeddings = torch.zeros(len(dataset))
 
-                idx_order, dataloader = update_mlm_dataloader(
+                kmeans_trainer = KMeansTrainer(
                     dataset=dataset,
                     collator=collator,
                     embeddings=embeddings, 
@@ -309,6 +309,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy, 
                     **cfg.trainer.train,
                 )
+                # update dataloader randomly
+                idx_order, dataloader = kmeans_trainer.train_and_update_dataloader()
 
             dataloader = accelerator.prepare_data_loader(dataloader)
 
