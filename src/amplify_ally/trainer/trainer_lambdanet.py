@@ -24,7 +24,6 @@ class LambdaNetTrainer:
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
-        idx: np.ndarray,
         embeddings: torch.Tensor,
         lambdas: torch.Tensor,
         flag: np.ndarray,
@@ -43,8 +42,7 @@ class LambdaNetTrainer:
             rd (int): The round index (1-based).
             model (torch.nn.Module): The LambdaNet regression model.
             optimizer (torch.optim.Optimizer): Optimizer used for parameter updates.
-            idx (np.ndarray): Array of global IDs for each embedding sample.
-            embeddings (torch.Tensor): Embeddings aligned with idx.
+            embeddings (torch.Tensor): Embeddings in canonical order.
             lambdas (torch.Tensor): Target lambda values corresponding to embeddings.
             flag (np.ndarray): Indicator array, where `flag[i] >= 1` means the sample (with global ID `i`) was seen/trained by the model, and `< 1` means unseen.
             seed (int): Random seed.
@@ -55,10 +53,10 @@ class LambdaNetTrainer:
             dtype (torch.dtype, optional): Dtype of the pad_mask. Defaults to torch.float32.
 
         Attributes:
-            trained_idx (np.ndarray): Subset of idx where flag >= 1.
+            trained_idx (np.ndarray): Global id where flag >= 1.
             trained_emb (torch.Tensor): Embeddings of trained samples.
             trained_lambdas (torch.Tensor): Lambda values of trained samples.
-            untrained_idx (np.ndarray): Subset of idx where flag < 1.
+            untrained_idx (np.ndarray): Global id where flag < 1.
             untrained_emb (torch.Tensor): Embeddings of unseen samples.
         """
         self.seed = seed
@@ -67,7 +65,7 @@ class LambdaNetTrainer:
         self.optimizer = optimizer
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
-        self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
+        self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
         self.dtype = dtype 
         self.device = device
         self.resume = resume
@@ -86,10 +84,10 @@ class LambdaNetTrainer:
         else:
             self.model, self.optimizer = model, optimizer
 
-        mask = (flag[idx] >= 1)
-        self.trained_idx = torch.as_tensor(idx[mask], dtype=torch.long)     # global ids
-        self.untrained_idx = torch.as_tensor(idx[~mask], dtype=torch.long)  # global ids
-        self.trained_lambdas = lambdas[self.trained_idx].to(self.device) 
+        mask = (flag >= 1)
+        self.trained_idx = torch.where(torch.as_tensor(mask))[0]
+        self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
+        self.trained_lambdas = lambdas[self.trained_idx] 
         
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
@@ -129,15 +127,15 @@ class LambdaNetTrainer:
                 out = self.model(x).view(-1)
                 lambda_pred.append(out)
 
-        return torch.cat(lambda_pred, dim=0)
+        return torch.cat(lambda_pred, dim=0).detach().cpu()
 
     def reconstruct_lambdas(self, pred_lambdas: torch.Tensor) -> torch.Tensor:
-        full_lambdas = torch.zeros(self.trained_idx.shape[0] + self.untrained_idx.shape[0], device=self.device, dtype=self.dtype)
+        full_lambdas = torch.zeros(self.trained_idx.shape[0] + self.untrained_idx.shape[0], dtype=self.dtype)
 
-        full_lambdas[self.trained_idx] = self.trained_lambdas.detach()
+        full_lambdas[self.trained_idx] = self.trained_lambdas
         full_lambdas[self.untrained_idx] = pred_lambdas
 
-        return full_lambdas.detach().cpu()
+        return full_lambdas
 
     def save_reg_ckpt(self, reg, optimizer_reg, ckpt_path):
         if hasattr(self.accelerator, "is_main_process") and not self.accelerator.is_main_process:
@@ -163,7 +161,7 @@ class LambdaNetTrainer:
     def get_lambdas(
         self,
         emb_dir: str,
-        dtype: torch.dtype = torch.float32,
+        embeddings: torch.Tensor | None = None, # emb is None when write_to_hard_dirve=True
         val_size: float = 0.2,
         seed: int = 42,
         max_epochs: int = 100,
@@ -171,9 +169,13 @@ class LambdaNetTrainer:
         patience: int = 3,
         num_workers: int = 4,
         write_to_hard_drive: bool = True,
+        has_emb: bool = False,
         **kwargs,
     ) -> torch.Tensor:
         if write_to_hard_drive:
+            if has_emb:
+                emb_dir = "/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/sprot_nsteps.100/embeddings" # hard coded now
+
             loaders = get_reg_dataloaders_from_saved_emb_set(
                 emb_dir=emb_dir,
                 lambdas=self.lambdas,
@@ -182,10 +184,10 @@ class LambdaNetTrainer:
                 val_size=val_size,
                 seed=seed,
                 num_workers=num_workers,
-                dtype=dtype
+                dtype=self.dtype
             )
         else:
-            loaders = get_reg_dataloaders_from_in_memory_emb_set(
+            scale, y_min, loaders = get_reg_dataloaders_from_in_memory_emb_set(
                 embeddings=embeddings,
                 lambdas=self.lambdas,
                 flag=self.flag,
@@ -231,7 +233,8 @@ class LambdaNetTrainer:
             self.model.load_state_dict(best_state)
 
         pred_lambdas = self.predict(loaders["test"])
-        # pred_lambdas = pred_lambdas * scale + y_min     
+        if write_to_hard_drive == False:
+            pred_lambdas = pred_lambdas * scale + y_min     
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
 

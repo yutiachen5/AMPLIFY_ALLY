@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=ALLY_nsamples.60M_mdoel.120M_niter.2_nsteps.20k_slr.0_nclusters.2048_e.1.9_dualstep.5k_dualgamma.0.9_warmup.0_seed.100
-#SBATCH -A h200ea
-#SBATCH -p h200ea
+#SBATCH --job-name=sprot_nsteps.400_niters.1_reglr.1e-5_nclusters.128_resume.True_dualStepsize.50
+#SBATCH -A scavenger-h200
+#SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=7-00:00:00
+#SBATCH --time=1-00:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -24,7 +24,7 @@ export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_GPU 
 
 # Activate the virtual environment
-source /hpc/group/naderilab/eleanor/env/bin/activate
+source /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/env/bin/activate
 
 echo "[INFO] nodes=${SLURM_JOB_NUM_NODES} gpus_per_task=${SLURM_GPUS_ON_NODE}"
 echo "[INFO] master_addr=${MASTER_ADDR} master_port=${MASTER_PORT}"
@@ -38,7 +38,7 @@ srun \
 	--gpus-per-task=$SLURM_GPUS_PER_TASK \
 	--ntasks-per-node=1 \
 	/bin/bash -c "\
-	/hpc/group/naderilab/eleanor/env/bin/accelerate launch \
+	/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/env/bin/accelerate launch \
 	--config_file=conf/accelerate_gpu.yaml \
 	--machine_rank=$SLURM_NODEID \
 	--num_cpu_threads_per_process=$SLURM_CPUS_PER_GPU \
@@ -52,7 +52,6 @@ srun \
 	hydra.run.dir=logs/$SLURM_JOB_NAME \
 	wandb.dir=logs/$SLURM_JOB_NAME \
 	wandb.name=$SLURM_JOB_NAME \
-	dataset=uniref50 \
 	model=[amplify,120M] \
 	optimizer=adamw \
 	optimizer.lr=0.001 \
@@ -60,25 +59,32 @@ srun \
 	optimizer.weight_decay=0.01 \
 	scheduler=cosine_decay \
 	scheduler.warmup_steps=0 \
+	scheduler.final_step=20000 \
 	trainer.dir=logs/$SLURM_JOB_NAME \
-	trainer.max_steps=100000 \
-	scheduler.final_step=900000 \
+	trainer.max_steps=2000 \
 	trainer.train.per_device_batch_size=256 \
 	trainer.validation.per_device_batch_size=512 \
 	trainer.gradient_accumulation_steps=2 \
-	trainer.save_steps=10000 \
-	strategy.n_steps=20000 \
+	trainer.save_steps=400 \
+	trainer.eval_steps=10 \
+	strategy.n_steps=400 \
 	strategy.slack_lr=0 \
-	strategy.n_iters=2 \
-	strategy.n_clusters=2048 \
-	strategy.epsilon=1.9 \
+	strategy.n_iters=1 \
+	strategy.n_clusters=128 \
+	strategy.epsilon=2.56 \
 	strategy.swap=True \
-	strategy.dual_lr_gamma=0.9 \
-	strategy.dual_lr_stepsize=1000 \
-	strategy.max_epochs=200 \
-	strategy.patience=20 \
-	strategy.per_device_batch_size_emb=2048 \
-	strategy.per_device_batch_size_kmeans=2048 \
-	strategy.per_device_batch_size_lambdanet=1024 \
-	seed=100
+	strategy.dual_lr_gamma=0.8 \
+	strategy.dual_lr_stepsize=50 \
+	strategy.max_epochs=80 \
+	strategy.patience=10 \
+	strategy.per_device_batch_size_emb=512 \
+	strategy.per_device_batch_size_kmeans=512 \
+	strategy.per_device_batch_size_lambdanet=512 \
+    strategy.has_emb=False \
+	strategy.write_to_hard_drive=False \
+    strategy.print_every=1 \
+	strategy.optimizer_lr=1e-5 \
+	strategy.resume=True \
+    seed=100 \
+    dataset=sprot
 "

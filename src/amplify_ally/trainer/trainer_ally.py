@@ -2,7 +2,6 @@ import os
 import gc
 import re
 import sys
-import pytz
 import torch
 import signal
 import shutil
@@ -141,13 +140,13 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Get the dtype for the pad_mask and class_weights
     # default values for now: dtype_pad_mask: bf16, dtype_class_weight: torch.float32/bf16??, dtype_reg_head: torch.float32
-    dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.bfloat16
+    dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.float32
     if accelerator.mixed_precision == "fp16":
-        dtype_pad_mask = torch.float16
+        dtype_pad_mask, dtype_reg_head = torch.float16, torch.float16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.float16
     elif accelerator.mixed_precision == "bf16": # default
-        dtype_pad_mask = torch.bfloat16
+        dtype_pad_mask, dtype_reg_head = torch.bfloat16, torch.bfloat16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.bfloat16
 
@@ -178,7 +177,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
     slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
-    idx_order = np.arange(len(dataset))
     dual_lr = cfg.strategy.dual_lr
 
     # Accelerate
@@ -233,18 +231,17 @@ def trainer_ally(cfg: DictConfig) -> None:
                         model=model, 
                         dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
                         device=accelerator.device,
-                        dtype=torch.float32, # cannot be bf16 for saving in .npy format
+                        dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
                         save_dir=emb_save_dir,
                         **cfg.strategy
                     )
 
                 print("Lmabdanet training for constrained learning")
                 lambdanet_trainer = LambdaNetTrainer(
-                    rd=rd - 1, # -1 since it's based on the previous rd
+                    rd=rd-1, # -1 since it's based on the previous rd
                     model=reg, 
                     optimizer=optimizer_reg, 
                     device=accelerator.device, 
-                    idx=idx_order, 
                     embeddings=embeddings, 
                     lambdas=lambdas, 
                     flag=flag, 
@@ -257,14 +254,13 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas = lambdanet_trainer.get_lambdas(emb_dir=emb_save_dir, dtype=dtype_pad_mask, **cfg.strategy) # pred
+                lambdas = lambdanet_trainer.get_lambdas(emb_dir=emb_save_dir, embeddings=embeddings, **cfg.strategy) # pred
 
                 # Update dataloder based on actual and predicted lambda
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
                     collator=collator,
                     embeddings=embeddings, 
-                    idx_order=idx_order, 
                     lambdas=lambdas, 
                     seed=cfg.seed,
                     emb_dir=emb_save_dir,
@@ -273,7 +269,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.trainer.train,
                 )
 
-                # np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
+                np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
                 idx_np = np.asarray(idx_order, dtype=np.int64)
                 flag_np = np.asarray(flag)
                 actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
@@ -300,7 +296,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     dataset=dataset,
                     collator=collator,
                     embeddings=embeddings, 
-                    idx_order=idx_order, 
                     lambdas=lambdas, 
                     seed=cfg.seed,
                     emb_dir=emb_save_dir,
@@ -333,7 +328,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # called, and the first call to .backward() outside this context manager will trigger the synchronization (accumulate gradients)
                 if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
                     with accelerator.no_sync(model):
-                        if iteration == cfg.strategy.n_iters - 1 and rd > 1:
+                        if iteration == cfg.strategy.n_iters - 1 and rd > 1 and cfg.strategy.write_to_hard_drive:
                             out = model(x, pad_mask, output_hidden_states=True)
                             logits = out.logits
                             emb = out.hidden_states[-1]
@@ -404,9 +399,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                         metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
                         metrics["slack_mean"] = slacks[flag >= 1].mean().item()
                         metrics["constraint_violations"] = constraint_violations
-
                 else:
-                    if iteration == cfg.strategy.n_iters - 1 and rd > 1:
+                    if iteration == cfg.strategy.n_iters - 1 and rd > 1 and cfg.strategy.write_to_hard_drive:
                         out = model(x, pad_mask, output_hidden_states=True)
                         logits = out.logits
                         emb = out.hidden_states[-1]

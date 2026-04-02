@@ -90,35 +90,18 @@ class InMemoryProteinDataset(Dataset):
 
 
 class InMemoryEmbDataset(Dataset): 
-    def __init__(self, X_train, X_val, y_train, y_val, X_test, split="train"):
+    def __init__(self, x_data, y_data, split="train"):
         self.split = split
+        self.x_data, self.y_data = x_data, y_data
 
-        if split == "train":
-            self.x_data, self.y_data = X_train, y_train
-        elif split == "val":
-            self.x_data, self.y_data = X_val, y_val
-        elif split == "test":
-            self.x_data = X_test
-    
     def __getitem__(self, i):
         if self.split == "train" or self.split == "val":
             return self.x_data[i], self.y_data[i]
         elif self.split == "test":
-            return self.x_data[i]
+            return self.x_data[i], torch.tensor(float('nan'))
 
     def __len__(self):
         return self.x_data.shape[0]
-
-
-# class EmbDataset(Dataset):
-#     def __init__(self, emb):
-#         self.emb = emb
-
-#     def __len__(self):
-#         return len(self.emb)
-
-#     def __getitem__(self, i):
-#         return self.emb[i]
 
 
 class SavedEmbDataset(Dataset):

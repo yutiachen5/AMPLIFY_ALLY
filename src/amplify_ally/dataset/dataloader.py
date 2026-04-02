@@ -186,29 +186,30 @@ def get_reg_dataloaders_from_in_memory_emb_set(
     seed: int = 42,
     num_workers: int = 0
 ) -> Dict[str, DataLoader]:
-    mask = (flag[idx] >= 1)
-    trained_emb = (embeddings[mask]).to(device=device) 
-    untrained_emb = (embeddings[~mask]).to(device=device) 
+    mask = (flag >= 1)
+    trained_emb = embeddings[mask]
+    untrained_emb = embeddings[~mask]
+    trained_lambdas = lambdas[mask]
 
     n_val = int(val_size * trained_emb.shape[0])
     g = torch.Generator(device="cpu").manual_seed(seed)
-    perm = torch.randperm(n, generator=g)
+    perm = torch.randperm(trained_emb.shape[0], generator=g)
 
     val_idx = perm[:n_val]
     train_idx = perm[n_val:]
 
     X_train = trained_emb[train_idx]
     X_val = trained_emb[val_idx]
-    y_train = self.trained_lambdas[train_idx]
-    y_val = self.trained_lambdas[val_idx]
+    y_train = trained_lambdas[train_idx]
+    y_val = trained_lambdas[val_idx]
     X_test = untrained_emb
 
     # min-max scaler
-    # y_min, y_max = y_train.min(), y_train.max()
-    # scale = (y_max - y_min).clamp_min(1e-12)
+    y_min, y_max = y_train.min(), y_train.max()
+    scale = (y_max - y_min).clamp_min(1e-12)
 
-    # y_train = ((y_train - y_min)/scale).view(-1, 1)
-    # y_val = ((y_val - y_min)/scale).view(-1, 1)
+    y_train = ((y_train - y_min)/scale).view(-1, 1)
+    y_val = ((y_val - y_min)/scale).view(-1, 1)
 
     loader_kwargs = dict(
         batch_size=batch_size,
@@ -222,11 +223,11 @@ def get_reg_dataloaders_from_in_memory_emb_set(
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 2
 
-    train_ds = InMemoryEmbDataset(X_train, X_val, y_train, y_val, X_test, split="train")
-    val_ds   = InMemoryEmbDataset(X_train, X_val, y_train, y_val, X_test, split="val")
-    test_ds  = InMemoryEmbDataset(X_train, X_val, y_train, y_val, X_test, split="test")
+    train_ds = InMemoryEmbDataset(X_train, y_train, split="train")
+    val_ds   = InMemoryEmbDataset(X_val, y_val, split="val")
+    test_ds  = InMemoryEmbDataset(X_test, None, split="test")
 
-    return {
+    return scale, y_min, {
         "train": DataLoader(train_ds, **loader_kwargs),
         "val":   DataLoader(val_ds, **loader_kwargs),
         "test":  DataLoader(test_ds, **loader_kwargs),
@@ -236,7 +237,6 @@ def update_mlm_dataloader(
     dataset: torch.utils.data.Dataset,
     collator: Callable,
     embeddings: torch.Tensor,
-    idx_order: np.array,
     lambdas: torch.Tensor,
     emb_dir: str,
     seed: int = 42,
@@ -254,7 +254,6 @@ def update_mlm_dataloader(
     Args:
         embeddings (torch.Tensor). Sequence-level representation.
         lambdas (torch.Tensor). Informativeness of each sequence.
-        idx_order (List). List of global ids for the training samples.
         n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
         seed (int): Random seed. Defaults to 0.
         per_device_batch_size_kmeans (int): Batch size for each GPU when doing clustering.
@@ -265,7 +264,7 @@ def update_mlm_dataloader(
     # shuffle the index list for unconstrained learning, the lambda values do not matter since they are all zeros.
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        updated_idx_order = np.random.permutation(idx_order)
+        updated_idx_order = np.random.permutation(np.arange(len(lambdas)))
         return updated_idx_order, DataLoader(
             dataset=dataset.update(updated_idx_order),
             batch_size=per_device_batch_size,
@@ -315,10 +314,10 @@ def update_mlm_dataloader(
         gc.collect()
     
     # lambdas is global-id axis; align it to the embedding/cluster order (which is idx_order)
-    lambdas_aligned = lambdas.to(torch.float32).numpy()[idx_order]   # now aligned with idx_order
+    # lambdas_aligned = lambdas.to(torch.float32).numpy()[idx_order]   # now aligned with idx_order
 
     sorted_triplets = sorted(
-        zip(clusters, lambdas_aligned, idx_order),
+        zip(clusters, lambdas.to(torch.float32).numpy(), range(len(clusters))),
         key=lambda t: (t[0], -t[1])   
     )
 

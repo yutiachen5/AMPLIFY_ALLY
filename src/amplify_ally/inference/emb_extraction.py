@@ -45,9 +45,14 @@ def get_embedding(
     write_to_hard_drive,
     dtype: torch.dtype = torch.float32,
     pooling_method: str = "mean",
+    has_emb: bool = False,
     **kwargs,
 ) -> torch.Tensor | None:
     """Get sequence-level embeddings for each sample in dataloader."""
+    
+    if has_emb and write_to_hard_drive:
+        print("skip emb generation, loading emb from given path")
+        return None
 
     pbar = tqdm(
         desc="Extract embeddings",
@@ -85,5 +90,5 @@ def get_embedding(
     if write_to_hard_drive:
         return None
     else:
-        embedding = torch.cat(embedding, dim=0).to(dtype=dtype)  # [n_samples, emb_dim] on CPU
+        embedding = torch.cat(embedding, dim=0)  # [n_samples, emb_dim] on CPU
         return embedding
