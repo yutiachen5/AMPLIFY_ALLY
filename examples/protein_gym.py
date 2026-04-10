@@ -16,7 +16,7 @@ device = "cuda"
 # device = "cpu"
 compile = False
 
-def calc_fitness(model, prots, tokenizer, device='cuda:0', model_context_len=1023):
+def calc_fitness(model, prots, tokenizer, device='cuda:0', model_context_len=512):
     loss_list = []
     loss_fn = CrossEntropyLoss()
     with torch.no_grad():
@@ -85,7 +85,7 @@ def main():
 
     mapping_protein_seq_DMS = pd.read_csv(args.DMS_reference_file_path)
     list_DMS = mapping_protein_seq_DMS["DMS_id"]
-    DMS_id = list_DMS[args.DMS_index] # might need a loop/ parallel jobs to cal scores for all files
+    DMS_id = list_DMS[args.DMS_index] 
     DMS_file_name = mapping_protein_seq_DMS["DMS_filename"][mapping_protein_seq_DMS["DMS_id"]==DMS_id].values[0]
     target_seq = mapping_protein_seq_DMS["target_seq"][mapping_protein_seq_DMS["DMS_id"]==DMS_id].values[0].upper()
     print("Computing scores for: {} with model: {}".format(DMS_id, args.model_path))

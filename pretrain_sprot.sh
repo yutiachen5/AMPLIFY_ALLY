@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=uniref6M_nsteps.6k_niters.1_model.120M_e.2.4_nclusters.256_stepsize.600
+#SBATCH --job-name=sprot_nsteps.400_niters.1_rd.10_model.120M_lr.1e-6_nclusters.16_resume.True_dualStepsize.40_lr_gamma.0.7
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -16,7 +16,6 @@
 export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export CUDA_LAUNCH_BLOCKING=1
 
 source /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/env/bin/activate
 
@@ -46,27 +45,27 @@ srun \
     wandb.name=$SLURM_JOB_NAME \
     model=[amplify,120M] \
     optimizer=adamw \
-    optimizer.lr=0.001 \
+    optimizer.lr=1e-6 \
     optimizer.betas=[0.9,0.95] \
     optimizer.weight_decay=0.01 \
     scheduler=cosine_decay \
     scheduler.warmup_steps=0 \
-    scheduler.final_step=900000 \
+    scheduler.final_step=20000 \
     trainer.dir=logs/$SLURM_JOB_NAME \
-    trainer.max_steps=100000 \
+    trainer.max_steps=2000 \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=6000 \
-    trainer.eval_steps=100 \
-    strategy.n_steps=6000 \
+    trainer.save_steps=400 \
+    trainer.eval_steps=10 \
+    strategy.n_steps=400 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
-    strategy.n_clusters=256 \
-    strategy.epsilon=2.4 \
+    strategy.n_clusters=16 \
+    strategy.epsilon=2.56 \
     strategy.swap=True \
-    strategy.dual_lr_gamma=0.9 \
-    strategy.dual_lr_stepsize=600 \
+    strategy.dual_lr_gamma=0.7 \
+    strategy.dual_lr_stepsize=40 \
     strategy.max_epochs=100 \
     strategy.patience=5 \
     strategy.per_device_batch_size_emb=512 \
@@ -75,10 +74,10 @@ srun \
     strategy.has_emb=False \
     strategy.write_to_hard_drive=False \
     strategy.print_every=1 \
-    strategy.optimizer_lr=1e-4 \
+    strategy.optimizer_lr=1e-5 \
     strategy.resume=True \
-    strategy.max_rds=6 \
+    strategy.max_rds=10 \
     strategy.save_intermediates=False \
     seed=100 \
-    dataset=uniref50_0.1
+    dataset=sprot
 "

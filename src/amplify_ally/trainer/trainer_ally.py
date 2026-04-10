@@ -27,6 +27,9 @@ from ..inference import get_embedding, pooling, save_embedding
 from .trainer_lambdanet import LambdaNetTrainer
 
 
+# taskID=int(os.environ['SLURM_ARRAY_TASK_ID'])
+# jobName = str(os.environ['SLURM_JOB_NAME'])
+
 def evaluate(
     model: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,
@@ -269,23 +272,24 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.trainer.train,
                 )
 
-                np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
-                idx_np = np.asarray(idx_order, dtype=np.int64)
-                flag_np = np.asarray(flag)
-                actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
-                pred_np    = lambdas.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
-                df = pd.DataFrame({
-                    "idx": idx_np,
-                    "flag": flag_np[idx_np],
-                    "lambda_act": actual_np[idx_np],
-                    "lambda_pred": pred_np[idx_np],
-                })
-                df.to_csv(os.path.join(rd_save_dir, "lambdas.csv"), index=False, float_format="%.8f")
+                if cfg.strategy.save_intermediates:
+                    np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
+                    idx_np = np.asarray(idx_order, dtype=np.int64)
+                    flag_np = np.asarray(flag)
+                    actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
+                    pred_np    = lambdas.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
+                    df = pd.DataFrame({
+                        "idx": idx_np,
+                        "flag": flag_np[idx_np],
+                        "lambda_act": actual_np[idx_np],
+                        "lambda_pred": pred_np[idx_np],
+                    })
+                    df.to_csv(os.path.join(rd_save_dir, "lambdas.csv"), index=False, float_format="%.8f")
+                    del df, idx_np, flag_np, actual_np, pred_np
 
                 print("Dataloader updated.")
 
                 del lambdanet_trainer
-                del df, idx_np, flag_np, actual_np, pred_np
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

@@ -4,8 +4,8 @@ import torch
 import pickle
 import numpy as np
 from transformers import EsmForMaskedLM, AutoTokenizer
-from amplify.model import AMPLIFY, AMPLIFYConfig
-from amplify.tokenizer import ProteinTokenizer
+from amplify_ally.model import AMPLIFY, AMPLIFYConfig
+from amplify_ally.tokenizer import ProteinTokenizer
 from itertools import islice
 
 
