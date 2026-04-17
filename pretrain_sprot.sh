@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=sprot_nsteps.400_niters.1_rd.10_model.120M_lr.1e-6_nclusters.16_resume.True_dualStepsize.40_lr_gamma.0.7
+#SBATCH --job-name=sprot_nsteps.100_niters.1_rd.10_model.120M_lr.1e-5_nclusters.32_resume.True_dualStepsize.10_lr_gamma.0.6
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -45,7 +45,7 @@ srun \
     wandb.name=$SLURM_JOB_NAME \
     model=[amplify,120M] \
     optimizer=adamw \
-    optimizer.lr=1e-6 \
+    optimizer.lr=1e-5 \
     optimizer.betas=[0.9,0.95] \
     optimizer.weight_decay=0.01 \
     scheduler=cosine_decay \
@@ -56,16 +56,16 @@ srun \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=400 \
-    trainer.eval_steps=10 \
-    strategy.n_steps=400 \
+    trainer.save_steps=100 \
+    trainer.eval_steps=5 \
+    strategy.n_steps=100 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
-    strategy.n_clusters=16 \
+    strategy.n_clusters=32 \
     strategy.epsilon=2.56 \
     strategy.swap=True \
-    strategy.dual_lr_gamma=0.7 \
-    strategy.dual_lr_stepsize=40 \
+    strategy.dual_lr_gamma=0.6 \
+    strategy.dual_lr_stepsize=10 \
     strategy.max_epochs=100 \
     strategy.patience=5 \
     strategy.per_device_batch_size_emb=512 \
@@ -77,7 +77,7 @@ srun \
     strategy.optimizer_lr=1e-5 \
     strategy.resume=True \
     strategy.max_rds=10 \
-    strategy.save_intermediates=False \
+    strategy.save_intermediates=True \
     seed=100 \
     dataset=sprot
 "

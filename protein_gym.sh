@@ -8,11 +8,14 @@
 #SBATCH --time=1:00:00
 #SBATCH --mem=30G
 #SBATCH --cpus-per-task=2
-#SBATCH --array=0-2
+#SBATCH --array=0
 
-MDL_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/uniref30M_nsteps.20k_niters.1_model.8M/checkpoints/checkpoint_5/model.pt"
-CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/uniref30M_nsteps.20k_niters.1_model.8M/.hydra/config.yaml"
-OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/ProteinGym/output/uniref30M_nsteps.20k_niters.1_model.8M"
+BASE="uniref6M_nsteps.4k_niters.1_model.120M_e.2.2_nclusters.512_stepsize.400"
+MDL_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/${BASE}/checkpoints/checkpoint_5/model.pt"
+CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/${BASE}/.hydra/config.yaml"
+OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/ProteinGym/output/${BASE}"
+
+mkdir -p ${OUT_PATH}
 
 srun /bin/bash -c "
     export CUDA_VISIBLE_DEVICES=\$SLURM_LOCALID

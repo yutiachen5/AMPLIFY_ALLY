@@ -27,8 +27,6 @@ from ..inference import get_embedding, pooling, save_embedding
 from .trainer_lambdanet import LambdaNetTrainer
 
 
-# taskID=int(os.environ['SLURM_ARRAY_TASK_ID'])
-# jobName = str(os.environ['SLURM_JOB_NAME'])
 
 def evaluate(
     model: torch.nn.Module,
@@ -218,6 +216,16 @@ def trainer_ally(cfg: DictConfig) -> None:
     else:
         emb_save_dir = ""
 
+    # Initialzie lambdanet trainer
+    lambdanet_trainer = LambdaNetTrainer(
+        model=reg,
+        optimizer=optimizer_reg,
+        device=accelerator.device,
+        seed=cfg.seed,
+        accelerator=accelerator,
+        per_device_batch_size_lambdanet=cfg.strategy.per_device_batch_size_lambdanet,
+        dtype=dtype_reg_head,
+    )
 
     for rd in range(1, cfg.strategy.max_rds + 1):
         print(f"#### Round {rd} ####")
@@ -236,28 +244,21 @@ def trainer_ally(cfg: DictConfig) -> None:
                         device=accelerator.device,
                         dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
                         save_dir=emb_save_dir,
-                        **cfg.strategy
+                        **cfg.strategy,
                     )
 
                 print("Lmabdanet training for constrained learning")
-                lambdanet_trainer = LambdaNetTrainer(
-                    rd=rd-1, # -1 since it's based on the previous rd
-                    model=reg, 
-                    optimizer=optimizer_reg, 
-                    device=accelerator.device, 
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    flag=flag, 
-                    seed=cfg.seed,
-                    accelerator=accelerator, 
-                    save_dir=cfg.trainer.dir, 
-                    dtype=dtype_reg_head,
-                    **cfg.strategy
-                )
 
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas = lambdanet_trainer.get_lambdas(emb_dir=emb_save_dir, embeddings=embeddings, **cfg.strategy) # pred
+                lambdas = lambdanet_trainer.get_lambdas(
+                        rd=rd-1,
+                        lambdas=lambdas,
+                        flag=flag,
+                        emb_dir=cfg.trainer.emb_dir,
+                        embeddings=embeddings,  
+                        **cfg.strategy,
+                    ) # pred
 
                 # Update dataloder based on actual and predicted lambda
                 idx_order, dataloader = update_mlm_dataloader(
@@ -289,7 +290,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 print("Dataloader updated.")
 
-                del lambdanet_trainer
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

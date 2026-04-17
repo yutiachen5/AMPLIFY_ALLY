@@ -6,6 +6,8 @@ from tqdm import tqdm
 
 from typing import List
 
+from .swe import SWE_Pooling
+
 
 def pooling(
     emb: torch.Tensor,
@@ -23,6 +25,11 @@ def pooling(
 
     if pooling_method == "mean":
         pooled_emb = (emb * pooling_indicator.unsqueeze(-1)).sum(dim=1) / valid_counts  # [B, D]
+    elif pooling_method == "swe":
+        hidden_size = emb.shape[2]
+        max_length = emb.shape[1]
+        swe_pooling = SWE_Pooling(d_in=hidden_size, num_slices=hidden_size, num_ref_points=max_length, freeze_swe=True) # maybe decrease the num_ref_points?? freeze=True is faster
+        pooled_emb = swe_pooling(emb, pad_mask) # [batch_size, emb_dim]
     else:
         raise ValueError(f"Unsupported pooling: {pooling}")
 
@@ -75,6 +82,8 @@ def get_embedding(
                 pad_mask=pad_mask,
                 pooling_method=pooling_method,
                 dtype=dtype,
+                hidden_size=hidden_size,
+                max_length=max_length
             ) 
             global_id = global_id.detach().cpu().tolist()
 

@@ -1,100 +1,82 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-import os
-import re
 import numpy as np
-from copy import deepcopy
 from accelerate import Accelerator
 
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
+
 class LambdaNetTrainer:
     """
     Trainer class for the LambdaNet model.
-    Handles training, validation, and prediction for lambda regression.
+    Instantiate once before the pretraining loop; call `get_lambdas()` each round.
+    Model state is kept in memory and reused across rounds.
     """
 
     def __init__(
         self,
-        rd: int,
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
-        embeddings: torch.Tensor,
-        lambdas: torch.Tensor,
-        flag: np.ndarray,
         seed: int,
         accelerator: Accelerator,
-        save_dir: str,
         per_device_batch_size_lambdanet: int,
-        resume: bool,
+        scale_lr_factor: int,
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ):
-        """
-        Initialize the LambdaNet trainer.
-
-        Args:
-            rd (int): The round index (1-based).
-            model (torch.nn.Module): The LambdaNet regression model.
-            optimizer (torch.optim.Optimizer): Optimizer used for parameter updates.
-            embeddings (torch.Tensor): Embeddings in canonical order.
-            lambdas (torch.Tensor): Target lambda values corresponding to embeddings.
-            flag (np.ndarray): Indicator array, where `flag[i] >= 1` means the sample (with global ID `i`) was seen/trained by the model, and `< 1` means unseen.
-            seed (int): Random seed.
-            accelerator (accelerate.Accelerator): Handles device placement and distributed training.
-            save_dir (str): Saving directory for lambdanet if resume is true.
-            per_device_batch_size_lambdanet (int): Batch size per device for lambdanet trainer.
-            resume (bool): use the model in previous round or not.
-            dtype (torch.dtype, optional): Dtype of the pad_mask. Defaults to torch.float32.
-
-        Attributes:
-            trained_idx (np.ndarray): Global id where flag >= 1.
-            trained_emb (torch.Tensor): Embeddings of trained samples.
-            trained_lambdas (torch.Tensor): Lambda values of trained samples.
-            untrained_idx (np.ndarray): Global id where flag < 1.
-            untrained_emb (torch.Tensor): Embeddings of unseen samples.
-        """
         self.seed = seed
-        self.lambdas=lambdas
-        self.flag=flag
-        self.optimizer = optimizer
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
-        self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
-        self.dtype = dtype 
+        self.scale_lr_factor = scale_lr_factor
+        self.dtype = dtype
         self.device = device
-        self.resume = resume
-        self.ckpt_path_save = os.path.join(save_dir, f"round_{rd}", "reg_ckpt.pt")
-        self.ckpt_path_load = os.path.join(save_dir, f"round_{rd-1}", "reg_ckpt.pt")
 
-        ckpt_exists = (
-            rd > 1
-            and os.path.isfile(self.ckpt_path_load)
-            and os.path.getsize(self.ckpt_path_load) > 0
-        )
+        self.model = model
+        self.optimizer = optimizer
+        self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
 
-        if self.resume and ckpt_exists: 
-            print("Loading lambdanet checkpoint from ", str(self.ckpt_path_load))
-            self.model, self.optimizer = self.load_reg_ckpt(model, optimizer, self.ckpt_path_load)
-        else:
-            self.model, self.optimizer = model, optimizer
+        self.lambdas = None
+        self.flag = None
+        self.trained_idx = None
+        self.untrained_idx = None
+        self.trained_lambdas = None
 
-        mask = (flag >= 1)
+    # ------------------------------------------------------------------
+    # Round setup
+    # ------------------------------------------------------------------
+
+    def _setup_round(self, rd: int, lambdas: torch.Tensor, flag: np.ndarray) -> None:
+        """Update per-round data and double the LR for a warm restart."""
+        self.lambdas = lambdas
+        self.flag = flag
+
+        mask = flag >= 1
         self.trained_idx = torch.where(torch.as_tensor(mask))[0]
         self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
-        self.trained_lambdas = lambdas[self.trained_idx] 
-        
+        self.trained_lambdas = lambdas[self.trained_idx]
+
+        self._scale_lr(factor=self.scale_lr_factor)
+        print(f"[Round {rd}] LR scaled ×2 → {self.optimizer.param_groups[0]['lr']:.2e}")
+
+    def _scale_lr(self, factor: float) -> None:
+        """Multiply the learning rate of all param groups by `factor`."""
+        for pg in self.optimizer.param_groups:
+            pg["lr"] *= factor
+
+    # ------------------------------------------------------------------
+    # Core train / validate / predict of regression head
+    # ------------------------------------------------------------------
+
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
         total_loss = 0.0
 
         for x, y in dataloader:
-            x, y = x.to(self.device), y.to(self.device) 
+            x, y = x.to(self.device), y.to(self.device)
             self.optimizer.zero_grad()
             out = self.model(x)
             loss = F.mse_loss(out.squeeze(), y.squeeze())
@@ -110,7 +92,7 @@ class LambdaNetTrainer:
 
         with torch.no_grad():
             for x, y in dataloader:
-                x, y = x.to(self.device), y.to(self.device) 
+                x, y = x.to(self.device), y.to(self.device)
                 out = self.model(x)
                 loss = F.mse_loss(out.squeeze(), y.squeeze())
                 total_loss += loss.item()
@@ -129,39 +111,22 @@ class LambdaNetTrainer:
 
         return torch.cat(lambda_pred, dim=0).detach().cpu()
 
-    def reconstruct_lambdas(self, pred_lambdas: torch.Tensor) -> torch.Tensor:
-        full_lambdas = torch.zeros(self.trained_idx.shape[0] + self.untrained_idx.shape[0], dtype=self.dtype)
 
+    def reconstruct_lambdas(self, pred_lambdas: torch.Tensor) -> torch.Tensor:
+        n = self.trained_idx.shape[0] + self.untrained_idx.shape[0]
+        full_lambdas = torch.zeros(n, dtype=self.dtype)
         full_lambdas[self.trained_idx] = self.trained_lambdas
         full_lambdas[self.untrained_idx] = pred_lambdas
-
         return full_lambdas
 
-    def save_reg_ckpt(self, reg, optimizer_reg, ckpt_path):
-        if hasattr(self.accelerator, "is_main_process") and not self.accelerator.is_main_process:
-            return
-
-        ckpt = {
-            "reg_state": {k: v.detach().cpu() for k, v in reg.state_dict().items()},
-            "opt_state": optimizer_reg.state_dict() if optimizer_reg is not None else None,
-        }
-
-        self.accelerator.save(ckpt, str(ckpt_path))
-
-    def load_reg_ckpt(self, reg, optimizer_reg, ckpt_path, strict=True):
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        reg.load_state_dict(ckpt["reg_state"], strict=strict)
-        reg.to(device=self.device)
-
-        if optimizer_reg is not None and ckpt["opt_state"] is not None:
-            optimizer_reg.load_state_dict(ckpt["opt_state"])
-
-        return reg, optimizer_reg
 
     def get_lambdas(
         self,
+        rd: int,
+        lambdas: torch.Tensor,
+        flag: np.ndarray,
         emb_dir: str,
-        embeddings: torch.Tensor | None = None, # emb is None when write_to_hard_dirve=True
+        embeddings: torch.Tensor | None = None,
         val_size: float = 0.2,
         seed: int = 42,
         max_epochs: int = 100,
@@ -172,9 +137,13 @@ class LambdaNetTrainer:
         has_emb: bool = False,
         **kwargs,
     ) -> torch.Tensor:
+        # 1. Refresh per-round state and scale LR
+        self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
+
+        # 2. Build dataloaders
         if write_to_hard_drive:
             if has_emb:
-                emb_dir = "/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/sprot_nsteps.100/embeddings" # hard coded now
+                emb_dir = "/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/sprot_nsteps.100/embeddings"
 
             loaders = get_reg_dataloaders_from_saved_emb_set(
                 emb_dir=emb_dir,
@@ -184,8 +153,9 @@ class LambdaNetTrainer:
                 val_size=val_size,
                 seed=seed,
                 num_workers=num_workers,
-                dtype=self.dtype
+                dtype=self.dtype,
             )
+            scale, y_min = None, None
         else:
             scale, y_min, loaders = get_reg_dataloaders_from_in_memory_emb_set(
                 embeddings=embeddings,
@@ -195,9 +165,10 @@ class LambdaNetTrainer:
                 batch_size=self.per_device_batch_size,
                 val_size=val_size,
                 seed=seed,
-                num_workers=num_workers
+                num_workers=num_workers,
             )
 
+        # 3. Training loop with early stopping
         best_state = None
         best_val_loss = float("inf")
         n_no_improve = 0
@@ -209,22 +180,25 @@ class LambdaNetTrainer:
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                # Keep the best model based on val loss
-                best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+                best_state = {
+                    k: v.detach().cpu().clone()
+                    for k, v in self.model.state_dict().items()
+                }
                 n_no_improve = 0
             else:
                 n_no_improve += 1
 
             if epoch % print_every == 0:
                 print(
-                    f"[Epoch {epoch:03d}] Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}",
+                    f"[Round {rd} | Epoch {epoch:03d}] "
+                    f"Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}",
                     flush=True,
                 )
 
             if n_no_improve >= patience:
                 print(f"Early stopping at epoch {epoch} (no val improvement for {patience} epochs).")
                 break
-            
+
         print("Lambda training completed.")
 
         if best_state is None:
@@ -232,14 +206,16 @@ class LambdaNetTrainer:
         else:
             self.model.load_state_dict(best_state)
 
+        # 4. Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
-        if write_to_hard_drive == False:
-            pred_lambdas = pred_lambdas * scale + y_min     
+        if not write_to_hard_drive:
+            pred_lambdas = pred_lambdas * scale + y_min
 
-        full_lambdas = self.reconstruct_lambdas(pred_lambdas)
+        # 5. Free per-round data
+        self.lambdas = None
+        self.flag = None
+        self.trained_idx = None
+        self.untrained_idx = None
+        self.trained_lambdas = None
 
-        if self.resume:
-            self.save_reg_ckpt(self.model, self.optimizer, self.ckpt_path_save)
-
-        return full_lambdas
-
+        return self.reconstruct_lambdas(pred_lambdas)

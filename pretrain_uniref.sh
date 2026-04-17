@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=uniref6M_nsteps.6k_niters.1_model.120M_e.2.4_nclusters.256_stepsize.600
+#SBATCH --job-name=scaleLrFactor.1_sweFreeze.True_e.2.2_nclusters.256
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -52,21 +52,21 @@ srun \
     scheduler=cosine_decay \
     scheduler.warmup_steps=0 \
     scheduler.final_step=900000 \
-    trainer.dir=logs/$SLURM_JOB_NAME \
+    trainer.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
     trainer.max_steps=100000 \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=6000 \
+    trainer.save_steps=3000 \
     trainer.eval_steps=100 \
-    strategy.n_steps=6000 \
+    strategy.n_steps=3000 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
     strategy.n_clusters=256 \
-    strategy.epsilon=2.4 \
+    strategy.epsilon=2.2 \
     strategy.swap=True \
     strategy.dual_lr_gamma=0.9 \
-    strategy.dual_lr_stepsize=600 \
+    strategy.dual_lr_stepsize=300 \
     strategy.max_epochs=100 \
     strategy.patience=5 \
     strategy.per_device_batch_size_emb=512 \
@@ -76,9 +76,10 @@ srun \
     strategy.write_to_hard_drive=False \
     strategy.print_every=1 \
     strategy.optimizer_lr=1e-4 \
-    strategy.resume=True \
-    strategy.max_rds=6 \
-    strategy.save_intermediates=False \
+    strategy.max_rds=10 \
+    strategy.save_intermediates=True \
+    strategy.pooling_method=swe \
+    strategy.scale_lr_factor=1 \
     seed=100 \
     dataset=uniref50_0.1
 "
