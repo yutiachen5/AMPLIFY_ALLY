@@ -223,8 +223,8 @@ def trainer_ally(cfg: DictConfig) -> None:
         device=accelerator.device,
         seed=cfg.seed,
         accelerator=accelerator,
-        per_device_batch_size_lambdanet=cfg.strategy.per_device_batch_size_lambdanet,
         dtype=dtype_reg_head,
+        **cfg.strategy,
     )
 
     for rd in range(1, cfg.strategy.max_rds + 1):
@@ -252,10 +252,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
                 lambdas = lambdanet_trainer.get_lambdas(
-                        rd=rd-1,
+                        rd=rd,
                         lambdas=lambdas,
                         flag=flag,
-                        emb_dir=cfg.trainer.emb_dir,
+                        emb_dir=emb_save_dir,
                         embeddings=embeddings,  
                         **cfg.strategy,
                     ) # pred

@@ -59,8 +59,9 @@ class LambdaNetTrainer:
         self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
         self.trained_lambdas = lambdas[self.trained_idx]
 
-        self._scale_lr(factor=self.scale_lr_factor)
-        print(f"[Round {rd}] LR scaled ×2 → {self.optimizer.param_groups[0]['lr']:.2e}")
+        if rd > 2: # multiply lambdanet lr by 2 starting from the 3rd round
+            self._scale_lr(factor=self.scale_lr_factor)
+            print(f"[Round {rd}] LR scaled ×2 → {self.optimizer.param_groups[0]['lr']:.2e}")
 
     def _scale_lr(self, factor: float) -> None:
         """Multiply the learning rate of all param groups by `factor`."""
