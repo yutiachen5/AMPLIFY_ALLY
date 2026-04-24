@@ -233,6 +233,9 @@ class SWE_Pooling(nn.Module):
                 x = torch.linspace(0, 1, N + 2)[1:-1].unsqueeze(0).repeat(B * self.num_slices, 1).to(X.device)
                 xnew = torch.linspace(0, 1, M + 2)[1:-1].unsqueeze(0).repeat(B * self.num_slices, 1).to(X.device)
                 y = torch.transpose(Xslices_sorted, 1, 2).reshape(B * self.num_slices, -1)
+
+                interp_out = Interp1d()(x, y, xnew)
+
                 Xslices_sorted_interpolated = torch.transpose(Interp1d()(x, y, xnew).view(B, self.num_slices, -1), 1, 2)
         else:
             # replace invalid set elements with points to the right of the maximum element for each slice and each set (which will not impact the sorting and interpolation process)
@@ -277,6 +280,7 @@ class SWE_Pooling(nn.Module):
         Rslices = self.reference.expand(Xslices_sorted_interpolated.shape)
 
         _, Rind = torch.sort(Rslices, dim=1)
+
         embeddings = (Rslices - torch.gather(Xslices_sorted_interpolated, dim=1, index=Rind)).permute(0, 2, 1) # B x num_slices x M
 
         weighted_embeddings = self.weight(embeddings).sum(-1)

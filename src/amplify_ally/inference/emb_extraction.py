@@ -22,13 +22,13 @@ def pooling(
     """
     _, max_length, hidden_size = emb.shape
 
-    pooling_indicator = torch.isfinite(pad_mask)  # [B, L]
+    pooling_indicator = torch.isfinite(pad_mask)  # [B, L], 1=valid, 0=padding
     valid_counts = pooling_indicator.sum(dim=1, keepdim=True)  # [B, 1]
 
     if pooling_method == "mean":
-        pooled_emb = (emb * pooling_indicator.unsqueeze(-1)).sum(dim=1) / valid_counts  # [B, D]
+        pooled_emb = (emb * pooling_indicator.unsqueeze(-1)).sum(dim=1) / valid_counts  # [B, D] in float32
     elif pooling_method == "swe":
-        pooled_emb = swe_pooling(emb, pad_mask)  # [B, hidden_size]
+        pooled_emb = swe_pooling(emb, pooling_indicator)  # [B, hidden_size]
     else:
         raise ValueError(f"Unsupported pooling: {pooling_method}")
 

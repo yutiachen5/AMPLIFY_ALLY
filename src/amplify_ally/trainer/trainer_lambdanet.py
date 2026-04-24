@@ -38,6 +38,7 @@ class LambdaNetTrainer:
         self.model = model
         self.optimizer = optimizer
         self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+        self.base_lr = optimizer.param_groups[0]["lr"]
 
         self.lambdas = None
         self.flag = None
@@ -59,9 +60,16 @@ class LambdaNetTrainer:
         self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
         self.trained_lambdas = lambdas[self.trained_idx]
 
+        # reset optimizer lr to base each round
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = self.base_lr
+
         if rd > 2: # multiply lambdanet lr by 2 starting from the 3rd round
             self._scale_lr(factor=self.scale_lr_factor)
-            print(f"[Round {rd}] LR scaled ×2 → {self.optimizer.param_groups[0]['lr']:.2e}")
+            print(f"[Round {rd}] LR scaled ×{self.scale_lr_factor} → {self.optimizer.param_groups[0]['lr']:.2e}")
+
+        # reset scheduler
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
 
     def _scale_lr(self, factor: float) -> None:
         """Multiply the learning rate of all param groups by `factor`."""
@@ -212,6 +220,8 @@ class LambdaNetTrainer:
         if not write_to_hard_drive:
             pred_lambdas = pred_lambdas * scale + y_min
 
+        full_lambdas = self.reconstruct_lambdas(pred_lambdas)
+
         # 5. Free per-round data
         self.lambdas = None
         self.flag = None
@@ -219,4 +229,4 @@ class LambdaNetTrainer:
         self.untrained_idx = None
         self.trained_lambdas = None
 
-        return self.reconstruct_lambdas(pred_lambdas)
+        return full_lambdas

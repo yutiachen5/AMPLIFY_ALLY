@@ -59,7 +59,7 @@ srun \
     trainer.gradient_accumulation_steps=2 \
     trainer.save_steps=4000 \
     trainer.eval_steps=10 \
-    strategy.n_steps=40 \
+    strategy.n_steps=10 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
     strategy.n_clusters=32 \

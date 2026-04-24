@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=scaleLrFactor.1_sweFreeze.True_e.2.2_nclusters.256
+#SBATCH --job-name=scaleLrFactor.5_sweFreeze.True_e.2.2_nclusters.256
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -17,6 +17,7 @@ export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export CUDA_LAUNCH_BLOCKING=1
+export PYTHONUNBUFFERED=1
 
 source /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/env/bin/activate
 
@@ -24,6 +25,7 @@ echo "[INFO] nodes=${SLURM_JOB_NUM_NODES} gpus_per_task=${SLURM_GPUS_ON_NODE}"
 echo "[INFO] master_addr=${MASTER_ADDR} master_port=${MASTER_PORT}"
 
 srun \
+    --unbuffered \
     --kill-on-bad-exit=1 \
     --nodes=$SLURM_JOB_NUM_NODES \
     --ntasks=$SLURM_JOB_NUM_NODES \
@@ -78,8 +80,8 @@ srun \
     strategy.optimizer_lr=1e-4 \
     strategy.max_rds=10 \
     strategy.save_intermediates=True \
-    strategy.pooling_method=swe \
-    strategy.scale_lr_factor=1 \
+    strategy.pooling_method=mean \
+    strategy.scale_lr_factor=5 \
     seed=100 \
     dataset=uniref50_0.1
 "
