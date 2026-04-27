@@ -159,6 +159,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         merge=True,
         return_labels=False,
         dtype=dtype_pad_mask,
+        seed=cfg.seed,
     )
     eval_dataloaders = get_mlm_dataloader(
         **cfg.tokenizer,
@@ -167,6 +168,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         merge=False,
         return_labels=False,
         dtype=dtype_pad_mask,
+        seed=cfg.seed,
     )
     collator = train_dataloader.collate_fn
 

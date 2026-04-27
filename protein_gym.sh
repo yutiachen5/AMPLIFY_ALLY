@@ -8,12 +8,17 @@
 #SBATCH --time=1:00:00
 #SBATCH --mem=30G
 #SBATCH --cpus-per-task=2
-#SBATCH --array=0
+#SBATCH --array=0-216%10
 
-BASE="uniref6M_nsteps.4k_niters.1_model.120M_e.2.2_nclusters.512_stepsize.400"
-MDL_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/${BASE}/checkpoints/checkpoint_5/model.pt"
-CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/${BASE}/.hydra/config.yaml"
-OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/ProteinGym/output/${BASE}"
+RUN_NAME="scaleLrFactor.1_mean_e.2.2_nclusters.512"
+# RUN_NAME="ESM2-8M"
+
+BASE_DIR="/cwork/yc583/logs"
+
+MDL_PATH="${BASE_DIR}/${RUN_NAME}/checkpoints/checkpoint_7/model.pt"
+# CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/${RUN_NAME}/.hydra/config.yaml"
+CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/scaleLrFactor.1_mean_e.2.2_nclusters.512/.hydra/config.yaml"
+OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/ProteinGym/output/${RUN_NAME}"
 
 mkdir -p ${OUT_PATH}
 

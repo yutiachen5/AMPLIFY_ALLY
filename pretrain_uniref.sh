@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=scaleLrFactor.5_sweFreeze.True_e.2.2_nclusters.256
+#SBATCH --job-name=scaleLrFactor.2_mean_e.2.2_nclusters.512
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -43,8 +43,8 @@ srun \
     --mixed_precision=bf16 \
     --gradient_clipping=1.0 \
     /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/scripts/pretrain.py \
-    hydra.run.dir=logs/$SLURM_JOB_NAME \
-    wandb.dir=logs/$SLURM_JOB_NAME \
+    hydra.run.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
+    wandb.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
     wandb.name=$SLURM_JOB_NAME \
     model=[amplify,120M] \
     optimizer=adamw \
@@ -64,7 +64,7 @@ srun \
     strategy.n_steps=4000 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
-    strategy.n_clusters=256 \
+    strategy.n_clusters=512 \
     strategy.epsilon=2.2 \
     strategy.swap=True \
     strategy.dual_lr_gamma=0.9 \
@@ -78,10 +78,10 @@ srun \
     strategy.write_to_hard_drive=False \
     strategy.print_every=1 \
     strategy.optimizer_lr=1e-4 \
-    strategy.max_rds=10 \
+    strategy.max_rds=20 \
     strategy.save_intermediates=True \
     strategy.pooling_method=mean \
-    strategy.scale_lr_factor=5 \
+    strategy.scale_lr_factor=2 \
     seed=100 \
     dataset=uniref50_0.1
 "

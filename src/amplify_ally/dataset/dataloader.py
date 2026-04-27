@@ -38,6 +38,7 @@ def get_mlm_dataloader(
     pad_to_multiple_of: int = 8,
     dtype: torch.dtype = torch.float32,
     merge: bool = False,
+    seed: int = 42,
     **kwargs,
 ) -> DataLoader:
     """Public wrapper for constructing a ``torch`` dataloader.
@@ -66,10 +67,20 @@ def get_mlm_dataloader(
         padding (str, optional): Pad the batch to the longest sequence or to max_length. Defaults to "max_length".
         pad_to_multiple_of (int, optional): Pad to a multiple of. Defaults to 8.
         dtype (torch.dtype, optional): Dtype of the pad_mask. Defaults to torch.float32.
+        seed (int): Random seed for workers. Defualts to 42.
 
     Returns:
         torch.utils.data.DataLoader
     """
+
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    g = torch.Generator()
+    g.manual_seed(seed)
+
     tokenizer = ProteinTokenizer(
         vocab_path,
         pad_token_id,
@@ -102,6 +113,8 @@ def get_mlm_dataloader(
             prefetch_factor=2,
             pin_memory=True,
             persistent_workers=False,
+            worker_init_fn=seed_worker,
+            generator=g,
         )
     else:
         return {
@@ -113,6 +126,8 @@ def get_mlm_dataloader(
                 prefetch_factor=2,
                 pin_memory=True,
                 persistent_workers=False,
+                worker_init_fn=seed_worker,
+                generator=g,
             )
             for k, v in paths.items()
         }

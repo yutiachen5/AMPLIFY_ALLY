@@ -8,7 +8,7 @@ import pandas as pd
 
 import torch
 
-from utils import load_from_mila
+from utils import load_from_mila, load_from_hf
 
 device = "cuda"
 compile = False
@@ -43,12 +43,14 @@ def calc_fitness_masked(model, tokenizer, focus_seq, mutants, device='cuda', mod
     mask_token_id = tokenizer.mask_token_id
 
     with torch.no_grad():
-        for mutant in tqdm.tqdm(mutants):
+        for mutant in mutants:
             mutations = get_mutation_info(mutant)
             score = 0.0
 
             for from_AA, position, to_AA in mutations:
                 pos_idx = position - 1  # convert 1-based to 0-based
+                assert focus_seq[pos_idx] == from_AA, \
+                    f"WT mismatch at pos {position}: expected {from_AA}, got {focus_seq[pos_idx]}"
 
                 seq_window, new_pos_idx = get_sequence_window(focus_seq, pos_idx, model_context_len)
 
@@ -95,8 +97,14 @@ def main():
 
     args = parser.parse_args()
     model, tokenizer = load_from_mila(args.model_path, args.config_path)
+    # test this script using esm 8M mdoel
+    model, tokenizer = load_from_hf(
+        model_path="facebook/esm2_t6_8M_UR50D",
+        tokenizer_path="facebook/esm2_t6_8M_UR50D",
+        fp16=False,
+    )
     model.to(device)
-    torch.compile(model, disable=~compile)
+    model = torch.compile(model, disable=not compile)
 
     mapping_protein_seq_DMS = pd.read_csv(args.DMS_reference_file_path)
     list_DMS = mapping_protein_seq_DMS["DMS_id"]
