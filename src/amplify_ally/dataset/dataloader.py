@@ -7,6 +7,7 @@ from .data_collator import DataCollatorMLM
 
 import gc
 import math
+import random
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.preprocessing import MinMaxScaler

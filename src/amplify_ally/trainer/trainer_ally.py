@@ -24,9 +24,12 @@ from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloa
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..inference import get_embedding, pooling, save_embedding
-from .trainer_lambdanet import LambdaNetTrainer
+from .trainer_lambdanet import LambdaNetTrainer, _VERSION as v_reg_head
 
 
+_VERSION = "2026-04-29-v1"
+print(f"trainer_lambdanet version: {v_reg_head}")
+print(f"trainer_ally version: {_VERSION}")
 
 def evaluate(
     model: torch.nn.Module,
@@ -261,6 +264,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         embeddings=embeddings,  
                         **cfg.strategy,
                     ) # pred
+                accelerator.log({"lambdanet_lr": lambdanet_trainer.optimizer.param_groups[0]["lr"]}, step=int(metrics["num_steps"]))
 
                 # Update dataloder based on actual and predicted lambda
                 idx_order, dataloader = update_mlm_dataloader(
