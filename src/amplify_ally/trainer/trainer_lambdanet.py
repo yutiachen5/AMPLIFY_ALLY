@@ -60,19 +60,16 @@ class LambdaNetTrainer:
         self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
         self.trained_lambdas = lambdas[self.trained_idx]
 
-        # reset optimizer lr to base each round
+        # adjust learning rate
+        scaled_lr = self.base_lr * (self.scale_lr_factor ** (rd - 1))
         for pg in self.optimizer.param_groups:
-            pg["lr"] = self.base_lr
-
-        if rd > 2: # multiply lambdanet lr by 2 starting from the 3rd round
-            self._scale_lr(factor=self.scale_lr_factor)
-            print(f"[Round {rd}] LR scaled ×{self.scale_lr_factor} → {self.optimizer.param_groups[0]['lr']:.2e}")
+            pg["lr"] = scaled_lr
+        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-1} → {scaled_lr:.2e}")
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
 
     def _scale_lr(self, factor: float) -> None:
-        """Multiply the learning rate of all param groups by `factor`."""
         for pg in self.optimizer.param_groups:
             pg["lr"] *= factor
 

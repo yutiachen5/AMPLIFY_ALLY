@@ -76,7 +76,7 @@ def get_embedding(
                     d_in=hidden_size,
                     num_slices=hidden_size,
                     num_ref_points=max_length,
-                    freeze_swe=True,
+                    freeze_swe=False,
                 ).to(device)
 
             pooled_emb = pooling(
