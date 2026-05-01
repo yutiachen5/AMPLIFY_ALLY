@@ -9,7 +9,7 @@ from accelerate import Accelerator
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
 
-_VERSION = "2026-04-29-v1"
+_VERSION = "2026-05-01"
 
 class LambdaNetTrainer:
     """
@@ -139,12 +139,20 @@ class LambdaNetTrainer:
         num_workers: int = 4,
         write_to_hard_drive: bool = True,
         has_emb: bool = False,
+        resume: bool = False,
         **kwargs,
     ) -> torch.Tensor:
-        # 1. Refresh per-round state and scale LR
-        self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
 
-        # 2. Build dataloaders
+        def reset_weights(m):
+            if hasattr(m, 'reset_parameters'):
+                m.reset_parameters()
+
+        # Refresh per-round state and scale LR
+        self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
+        if not resume: # reset the model weights
+            self.model.apply(reset_weights)
+
+        # Build dataloaders
         if write_to_hard_drive:
             if has_emb:
                 emb_dir = "/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/sprot_nsteps.100/embeddings"
@@ -172,7 +180,7 @@ class LambdaNetTrainer:
                 num_workers=num_workers,
             )
 
-        # 3. Training loop with early stopping
+        # Training loop with early stopping
         best_state = None
         best_val_loss = float("inf")
         n_no_improve = 0
@@ -210,14 +218,14 @@ class LambdaNetTrainer:
         else:
             self.model.load_state_dict(best_state)
 
-        # 4. Predict & reconstruct
+        # Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
         if not write_to_hard_drive:
             pred_lambdas = pred_lambdas * scale + y_min
 
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
 
-        # 5. Free per-round data
+        # Free per-round data
         self.lambdas = None
         self.flag = None
         self.trained_idx = None

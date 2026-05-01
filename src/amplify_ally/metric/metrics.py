@@ -36,6 +36,7 @@ class Metrics(defaultdict):
         metrics_log["grad_norm_before_clip"] = self["grad_norm"]
         metrics_log["weight_norm"] = self["weight_norm"]
         metrics_log["learning_rate"] = self["learning_rate"]
+        metrics_log["lambdanet_learning_rate"] = self["lambdanet_learning_rate"]
         metrics_log["num_samples"] = self["num_samples"]
         metrics_log["num_tokens"] = self["num_tokens"]
         metrics_log["num_masked_tokens"] = self["num_masked_tokens"]
