@@ -63,10 +63,10 @@ class LambdaNetTrainer:
         self.trained_lambdas = lambdas[self.trained_idx]
 
         # adjust learning rate
-        scaled_lr = self.base_lr * (self.scale_lr_factor ** (rd - 1))
+        scaled_lr = self.base_lr * (self.scale_lr_factor ** (rd - 2))
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
-        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-1} → {scaled_lr:.2e}")
+        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
@@ -190,6 +190,10 @@ class LambdaNetTrainer:
             val_loss = self.validate(loaders["val"])
             self.scheduler.step(val_loss)
 
+            # track grad and weight norm
+            weight_norm = sum(p.data.norm(2).item() ** 2 for p in self.model.parameters()) ** 0.5
+            grad_norm = sum(p.grad.data.norm(2).item() ** 2 for p in self.model.parameters() if p.grad is not None) ** 0.5
+
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_state = {
@@ -203,7 +207,8 @@ class LambdaNetTrainer:
             if epoch % print_every == 0:
                 print(
                     f"[Round {rd} | Epoch {epoch:03d}] "
-                    f"Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}",
+                    f"Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f} | "
+                    f"grad_norm: {grad_norm:.4f} | weight_norm: {weight_norm:.4f}",
                     flush=True,
                 )
 
