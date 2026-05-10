@@ -1,5 +1,6 @@
 import math
 import json
+import copy
 from torch import Tensor
 from accelerate import Accelerator
 from collections import defaultdict
@@ -11,6 +12,9 @@ class Metrics(defaultdict):
     def __init__(self):
         super().__init__(int)
 
+        self.best_val_ppl = {"uniprot": float("inf"), "oas": float("inf"), "pdb": float("inf")}
+        self.best_mdl_state = {"uniprot": None, "oas": None, "pdb": None}
+
     def state_dict(self):
         return dict(self)
 
@@ -18,7 +22,7 @@ class Metrics(defaultdict):
         for k, v in state_dict.items():
             self[k] = v
 
-    def log(self, accelerator: Accelerator, json_path: str):
+    def log(self, accelerator: Accelerator, json_path: str, model=None):
         # Aggregate ALL metrics across devices (only required for local counters!)
         metrics_agg = Tensor(list(self.values())).to(accelerator.device, non_blocking=True)
         metrics_agg = accelerator.reduce(metrics_agg, reduction="sum").detach().cpu().numpy()
@@ -60,6 +64,10 @@ class Metrics(defaultdict):
             metrics_log[f"{eval_set}_val_accuracy"] = (
                 metrics_agg[f"local_{eval_set}_num_val_correct"] / metrics_agg[f"local_{eval_set}_num_val_pred"]
             )
+            if metrics_log[f"{eval_set}_val_perplexity"] < self.best_val_ppl[eval_set]:
+                self.best_val_ppl[eval_set] = metrics_log[f"{eval_set}_val_perplexity"]
+                unwrapped = accelerator.unwrap_model(model)
+                self.best_mdl_state[eval_set] = copy.deepcopy({k: v.cpu() for k, v in unwrapped.state_dict().items()})
 
         # Log the metrics
         accelerator.log(metrics_log)

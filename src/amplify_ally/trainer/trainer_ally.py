@@ -23,11 +23,11 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..inference import get_embedding, pooling, save_embedding
+from ..inference import get_embedding, pooling, save_embedding, SWE_Pooling
 from .trainer_lambdanet import LambdaNetTrainer, _VERSION as v_reg_head
 
 
-_VERSION = "2026-05-01"
+_VERSION = "2026-05-09"
 print(f"trainer_lambdanet version: {v_reg_head}")
 print(f"trainer_ally version: {_VERSION}")
 
@@ -71,7 +71,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     if not config_check.is_ok():
         raise ConfigError(config_check)
     it = 0
-
 
     chk_dir = os.path.join(cfg.trainer.dir, "checkpoints")
 
@@ -131,19 +130,22 @@ def trainer_ally(cfg: DictConfig) -> None:
     metrics = Metrics()
     accelerator.register_for_checkpointing(metrics)
 
-    # Embedding model, regression head, optimizer, and learning rate scheduler
+    # Initialize embedding model, regression head, optimizer, and scheduler
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
     reg = LambdaNet(input_dim=cfg.model.hidden_size)
     optimizer = get_optimizer(model, **cfg.optimizer)
     optimizer_reg = get_optimizer(reg, **cfg.strategy)
     scheduler = get_scheduler(optimizer, **cfg.scheduler)
-    # scheduler_reg = optim.lr_scheduler.StepLR(optimizer_reg, step_size=1, gamma=0.95)
+
+    # Initialize SWE pooling for emb extraction
+    swe_pooling = SWE_Pooling(d_in=cfg.model.hidden_size, num_slices=cfg.model.hidden_size, \
+                                num_ref_points=cfg.trainer.train.max_length, freeze_swe=cfg.strategy.freeze_swe) \
+                                if cfg.strategy.pooling_method == "swe" else None
 
     # Log the number of parameters
     accelerator.log({"model_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)})
 
     # Get the dtype for the pad_mask and class_weights
-    # default values for now: dtype_pad_mask: bf16, dtype_class_weight: torch.float32/bf16??, dtype_reg_head: torch.float32
     dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.float32
     if accelerator.mixed_precision == "fp16":
         dtype_pad_mask, dtype_reg_head = torch.float16, torch.float16
@@ -189,6 +191,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
     reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
+    if cfg.strategy.pooling_method == "swe":
+        swe_pooling = swe_pooling.to(device=accelerator.device) 
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
 
     # Get loss functions
@@ -234,87 +238,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     for rd in range(1, cfg.strategy.max_rds + 1):
         print(f"#### Round {rd} ####")
-
-        if rd > 1:
-            # Make saving dir 
-            rd_save_dir = os.path.join(cfg.trainer.dir, f"round_{rd-1}")
-            os.makedirs(rd_save_dir, exist_ok=True)
-            # Rebuild train data loader according to the order of informativeness and diversity
-            if constrained:
-                # Extract embeddings after the first round and replace the old emb with new one in later rds
-                if rd == 2 or cfg.strategy.write_to_hard_drive == False:
-                    embeddings = get_embedding(
-                        model=model, 
-                        dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
-                        device=accelerator.device,
-                        dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
-                        save_dir=emb_save_dir,
-                        **cfg.strategy,
-                    )
-
-                print("Lmabdanet training for constrained learning")
-
-                # Update lambda value for the next rd
-                lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas = lambdanet_trainer.get_lambdas(
-                        rd=rd,
-                        lambdas=lambdas,
-                        flag=flag,
-                        emb_dir=emb_save_dir,
-                        embeddings=embeddings,  
-                        **cfg.strategy,
-                    ) # pred
-
-                # Update dataloder based on actual and predicted lambda
-                idx_order, dataloader = update_mlm_dataloader(
-                    dataset=dataset,
-                    collator=collator,
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    seed=cfg.seed,
-                    emb_dir=emb_save_dir,
-                    dtype=dtype_pad_mask,
-                    **cfg.strategy, 
-                    **cfg.trainer.train,
-                )
-
-                if cfg.strategy.save_intermediates:
-                    np.save(os.path.join(rd_save_dir, "embeddings.npy"), embeddings.to(torch.float32).numpy())
-                    idx_np = np.asarray(idx_order, dtype=np.int64)
-                    flag_np = np.asarray(flag)
-                    actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas_tmp) else np.asarray(lambdas_tmp)
-                    pred_np    = lambdas.detach().cpu().to(torch.float32).numpy() if torch.is_tensor(lambdas) else np.asarray(lambdas)
-                    df = pd.DataFrame({
-                        "idx": idx_np,
-                        "flag": flag_np[idx_np],
-                        "lambda_act": actual_np[idx_np],
-                        "lambda_pred": pred_np[idx_np],
-                    })
-                    df.to_csv(os.path.join(rd_save_dir, "lambdas.csv"), index=False, float_format="%.8f")
-                    del df, idx_np, flag_np, actual_np, pred_np
-
-                print("Dataloader updated.")
-
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            else:
-                embeddings = torch.zeros(len(dataset))
-
-                idx_order, dataloader = update_mlm_dataloader(
-                    dataset=dataset,
-                    collator=collator,
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    seed=cfg.seed,
-                    emb_dir=emb_save_dir,
-                    dtype=dtype_pad_mask,
-                    **cfg.strategy, 
-                    **cfg.trainer.train,
-                )
-
-            dataloader = accelerator.prepare_data_loader(dataloader)
-
 
         for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
             print("Iteration: ", iteration + 1)
@@ -510,7 +433,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                             metrics["weight_norm"] = sum(p.data.norm(2).item() ** 2 for p in model.parameters()) ** 0.5
                         metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
                         metrics["lambdanet_learning_rate"] = lambdanet_trainer.optimizer.param_groups[0]["lr"] 
-                        metrics.log(accelerator, os.path.join(cfg.wandb.dir, "wandb", "metrics.json"))
+                        metrics.log(accelerator, os.path.join(cfg.wandb.dir, "wandb", "metrics.json"), model)
 
                     # Gradient clipping
                     if cfg.trainer.gradient_clipping is not None and cfg.trainer.gradient_clipping > 0:
@@ -531,20 +454,119 @@ def trainer_ally(cfg: DictConfig) -> None:
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
                         accelerator.save_state() # .safetensor
 
-                        step = int(metrics["num_steps"] / cfg.trainer.save_steps)
-                        step_dir = os.path.join(chk_dir, f"checkpoint_{step}")
-                        unwrapped = accelerator.unwrap_model(model)
-                        torch.save(unwrapped.state_dict(), os.path.join(step_dir, "model.pt"))
-
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break
+
+        # Rebuild train data loader according to the order of informativeness and diversity
+        if constrained:
+            # Extract embeddings after the first round and replace the old emb with new one in later rds
+            if rd == 1 or cfg.strategy.write_to_hard_drive == False:
+                embeddings, swe_pooling = get_embedding(
+                    model=model, 
+                    swe_pooling=swe_pooling,
+                    dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
+                    device=accelerator.device,
+                    dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
+                    save_dir=cfg.trainer.dir,
+                    **cfg.strategy,
+                )
+                # Save SWE pooling model
+                torch.save(swe_pooling.state_dict(), os.path.join(chk_dir, f"checkpoint_{rd}", "swe.pt"))
+
+            # Update lambda value for the next rd
+            lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
+            lambdas = lambdanet_trainer.get_lambdas(
+                    rd=rd,
+                    lambdas=lambdas,
+                    flag=flag,
+                    emb_dir=emb_save_dir,
+                    embeddings=embeddings, 
+                    save_dir = cfg.trainer.dir, 
+                    **cfg.strategy,
+                ) # overwrite old lambdas with pred lambdas
+
+            # Update dataloder based on actual and predicted lambda
+            idx_order, dataloader = update_mlm_dataloader(
+                dataset=dataset,
+                collator=collator,
+                embeddings=embeddings, 
+                lambdas=lambdas, 
+                seed=cfg.seed,
+                emb_dir=emb_save_dir,
+                dtype=dtype_pad_mask,
+                **cfg.strategy, 
+                **cfg.trainer.train,
+            )
+
+            if cfg.strategy.save_intermediates and rd != cfg.strategy.max_rds:
+                np.save(os.path.join(chk_dir, f"checkpoint_{rd}", "embeddings.npy"), embeddings.to(torch.float32).numpy())
+                idx_np = np.asarray(idx_order, dtype=np.int64)
+                flag_np = np.asarray(flag)
+                actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() 
+                pred_np = lambdas.detach().cpu().to(torch.float32).numpy()
+                df = pd.DataFrame({
+                    "idx": idx_np,
+                    "flag": flag_np[idx_np],
+                    "lambda_act": actual_np[idx_np],
+                    "lambda_pred": pred_np[idx_np],
+                })
+                df.to_csv(os.path.join(chk_dir, f"checkpoint_{rd}", "lambdas.csv"), index=False, float_format="%.8f")
+                del df, idx_np, flag_np, actual_np, pred_np
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            embeddings = torch.zeros(len(dataset))
+            idx_order, dataloader = update_mlm_dataloader(
+                dataset=dataset,
+                collator=collator,
+                embeddings=embeddings, 
+                lambdas=lambdas, 
+                seed=cfg.seed,
+                emb_dir=emb_save_dir,
+                dtype=dtype_pad_mask,
+                **cfg.strategy, 
+                **cfg.trainer.train,
+            )
+
+        dataloader = accelerator.prepare_data_loader(dataloader)
 
         # Adjust dual learning rate dynamically in each round
         dual_lr = cfg.strategy.dual_lr
 
+        # Add SWE parameters to regression head optimizer
+        if rd == 1 and cfg.strategy.pooling_method == "swe":
+            for pg in [{"params": swe_pooling.parameters()}]:
+                optimizer_reg.add_param_group(pg)
+
         # Log metrics
         metrics["num_epochs"] += 1
         metrics["num_batches_in_epoch"] = 0
+
+    # Save the best models with min val ppl on eval tasks
+    summary_dir = os.path.join(cfg.trainer.dir, "summary")
+    os.makedirs(summary_dir, exist_ok=True)
+
+    if any(v is not None for v in metrics.best_mdl_state.values()):
+        accelerator.wait_for_everyone()
+        unwrapped = accelerator.unwrap_model(model)
+
+        for eval_set in ["uniprot", "oas", "pdb"]:
+            if metrics.best_mdl_state[eval_set] is not None:
+                unwrapped.load_state_dict({k: v.to(accelerator.device) for k, v in metrics.best_mdl_state[eval_set].items()})
+                accelerator.save_model(unwrapped, os.path.join(summary_dir, eval_set))
+
+    # Save the final lambda values for future analysis
+    idx_np = np.asarray(idx_order, dtype=np.int64)
+    flag_np = np.asarray(flag)
+    lambdas_np = lambdas.detach().cpu().to(torch.float32).numpy()
+    df = pd.DataFrame({
+        "idx": idx_np,
+        "flag": flag_np[idx_np],
+        "lambda": lambdas_np[idx_np],
+    })
+    df.to_csv(os.path.join(summary_dir, "lambdas.csv"), index=False, float_format="%.8f")
 
     # Make sure that the wandb tracker finishes correctly and close the progress bar
     pbar.close()

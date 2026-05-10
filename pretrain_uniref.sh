@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=regLr.3e-5_scaleLrFactor.1.5_sweFreeze.False_e.2.2_nclusters.512
-#SBATCH -A scavenger-h200
-#SBATCH -p scavenger-h200
+#SBATCH --job-name=regLr.1e-5_scaleLrFactor.3_sweFreeze.True_e.2.2_nclusters.512
+#SBATCH -A naderilab_h200
+#SBATCH -p h200-hp
 #SBATCH --gres=gpu:h200:1
 #SBATCH --time=1-00:00:00
 
@@ -81,7 +81,7 @@ srun \
     strategy.max_rds=20 \
     strategy.save_intermediates=True \
     strategy.pooling_method=swe \
-    strategy.scale_lr_factor=1.5 \
+    strategy.scale_lr_factor=3 \
     strategy.resume=True \
     seed=100 \
     dataset=uniref50_0.1

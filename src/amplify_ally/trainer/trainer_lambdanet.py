@@ -9,7 +9,7 @@ from accelerate import Accelerator
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
 
-_VERSION = "2026-05-01"
+_VERSION = "2026-05-09"
 
 class LambdaNetTrainer:
     """
@@ -63,10 +63,10 @@ class LambdaNetTrainer:
         self.trained_lambdas = lambdas[self.trained_idx]
 
         # adjust learning rate
-        scaled_lr = self.base_lr * (self.scale_lr_factor ** (rd - 2))
+        scaled_lr = self.base_lr * (self.scale_lr_factor ** (rd-1))
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
-        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
+        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-1} → {scaled_lr:.2e}")
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
@@ -121,6 +121,7 @@ class LambdaNetTrainer:
         full_lambdas = torch.zeros(n, dtype=self.dtype)
         full_lambdas[self.trained_idx] = self.trained_lambdas
         full_lambdas[self.untrained_idx] = pred_lambdas
+
         return full_lambdas
 
 
@@ -130,6 +131,7 @@ class LambdaNetTrainer:
         lambdas: torch.Tensor,
         flag: np.ndarray,
         emb_dir: str,
+        save_dir: str,
         embeddings: torch.Tensor | None = None,
         val_size: float = 0.2,
         seed: int = 42,
@@ -196,10 +198,7 @@ class LambdaNetTrainer:
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_state = {
-                    k: v.detach().cpu().clone()
-                    for k, v in self.model.state_dict().items()
-                }
+                best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
                 n_no_improve = 0
             else:
                 n_no_improve += 1
@@ -216,8 +215,6 @@ class LambdaNetTrainer:
                 print(f"Early stopping at epoch {epoch} (no val improvement for {patience} epochs).")
                 break
 
-        print("Lambda training completed.")
-
         if best_state is None:
             print("Warning: Validation did not improve — keeping the last model.")
         else:
@@ -228,7 +225,11 @@ class LambdaNetTrainer:
         if not write_to_hard_drive:
             pred_lambdas = pred_lambdas * scale + y_min
 
+        # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
+
+        # Save the regression head
+        torch.save(best_state, os.path.join(save_dir, f"checkpoint_{rd}", "lambdanet.pt"))
 
         # Free per-round data
         self.lambdas = None

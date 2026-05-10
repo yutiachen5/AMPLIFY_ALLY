@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=testing_swe
+#SBATCH --job-name=testing_mdl_savings
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=2:00:00
+#SBATCH --time=1:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -57,7 +57,7 @@ srun \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=4000 \
+    trainer.save_steps=10 \ --should be the same as strategy.n_steps!
     trainer.eval_steps=10 \
     strategy.n_steps=10 \
     strategy.slack_lr=0 \
@@ -75,11 +75,11 @@ srun \
     strategy.has_emb=False \
     strategy.write_to_hard_drive=False \
     strategy.print_every=1 \
-    strategy.optimizer_lr=1e-4 \
-    strategy.max_rds=10 \
+    strategy.optimizer_lr=1e-5 \
+    strategy.max_rds=5 \
     strategy.save_intermediates=True \
     strategy.pooling_method=swe \
-    strategy.scale_lr_factor=1 \
+    strategy.scale_lr_factor=3 \
     seed=100 \
     dataset=demo
 "

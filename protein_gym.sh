@@ -10,14 +10,13 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --array=0-216%10
 
-RUN_NAME="scaleLrFactor.1_mean_e.2.2_nclusters.512"
 # RUN_NAME="ESM2-8M"
 
+RUN_NAME="regLr.1e-5_scaleLrFactor.3_sweFreeze.False_e.2.2_nclusters.512"
+CHECKPOINT=6
 BASE_DIR="/cwork/yc583/logs"
-
-MDL_PATH="${BASE_DIR}/${RUN_NAME}/checkpoints/checkpoint_7/model.pt"
-# CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/${RUN_NAME}/.hydra/config.yaml"
-CONFIG_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/scaleLrFactor.1_mean_e.2.2_nclusters.512/.hydra/config.yaml"
+MDL_PATH="${BASE_DIR}/${RUN_NAME}/checkpoints/checkpoint_${CHECKPOINT}/model.pt"
+CONFIG_PATH="${BASE_DIR}/${RUN_NAME}/.hydra/config.yaml"
 OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/ProteinGym/output/${RUN_NAME}"
 
 mkdir -p ${OUT_PATH}

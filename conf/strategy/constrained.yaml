@@ -30,7 +30,7 @@ scale_lr_factor: 2
 pooling_method: mean
 write_to_hard_drive: True
 has_emb: False
-shard_size: 1_000_000
+freeze_swe: False
 
 # save intermediate res for debugging
 save_intermediates: False
