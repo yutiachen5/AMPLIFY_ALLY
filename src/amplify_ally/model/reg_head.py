@@ -3,6 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
+from ..inference import SWE_Pooling
+
 
 class LambdaNet(nn.Module):
     def __init__(self, input_dim):

@@ -249,6 +249,7 @@ def get_reg_dataloaders_from_in_memory_emb_set(
         "test":  DataLoader(test_ds, **loader_kwargs),
     }
 
+    
 def update_mlm_dataloader(
     dataset: torch.utils.data.Dataset,
     collator: Callable,
@@ -329,9 +330,6 @@ def update_mlm_dataloader(
         del X, embeddings
         gc.collect()
     
-    # lambdas is global-id axis; align it to the embedding/cluster order (which is idx_order)
-    # lambdas_aligned = lambdas.to(torch.float32).numpy()[idx_order]   # now aligned with idx_order
-
     sorted_triplets = sorted(
         zip(clusters, lambdas.to(torch.float32).numpy(), range(len(clusters))),
         key=lambda t: (t[0], -t[1])   
@@ -352,7 +350,7 @@ def update_mlm_dataloader(
 
     for i in range(max_len):                
         for c in range(n_clusters):         
-            if i < len(cluster_to_samples[c]):   # skip if cluster shorter
+            if i < len(cluster_to_samples[c]):   # skip if cluster is shorter
                 l, idx = cluster_to_samples[c][i]
                 updated_idx_order.append(idx)
     updated_idx_order = np.array(updated_idx_order)

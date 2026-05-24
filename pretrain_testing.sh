@@ -3,7 +3,7 @@
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=1:00:00
+#SBATCH --time=1-00:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -23,6 +23,7 @@ source /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/env/bin/activate
 echo "[INFO] nodes=${SLURM_JOB_NUM_NODES} gpus_per_task=${SLURM_GPUS_ON_NODE}"
 echo "[INFO] master_addr=${MASTER_ADDR} master_port=${MASTER_PORT}"
 
+# crucial: make sure trainer.save_steps == strategy.n_steps
 srun \
     --kill-on-bad-exit=1 \
     --nodes=$SLURM_JOB_NUM_NODES \
@@ -41,8 +42,8 @@ srun \
     --mixed_precision=bf16 \
     --gradient_clipping=1.0 \
     /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/scripts/pretrain.py \
-    hydra.run.dir=logs/$SLURM_JOB_NAME \
-    wandb.dir=logs/$SLURM_JOB_NAME \
+    hydra.run.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
+    wandb.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
     wandb.name=$SLURM_JOB_NAME \
     model=[amplify,120M] \
     optimizer=adamw \
@@ -57,7 +58,7 @@ srun \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=10 \ --should be the same as strategy.n_steps!
+    trainer.save_steps=10 \
     trainer.eval_steps=10 \
     strategy.n_steps=10 \
     strategy.slack_lr=0 \
@@ -76,7 +77,7 @@ srun \
     strategy.write_to_hard_drive=False \
     strategy.print_every=1 \
     strategy.optimizer_lr=1e-5 \
-    strategy.max_rds=5 \
+    strategy.max_rds=2 \
     strategy.save_intermediates=True \
     strategy.pooling_method=swe \
     strategy.scale_lr_factor=3 \

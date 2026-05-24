@@ -54,7 +54,7 @@ def get_embedding(
 
     if has_emb and write_to_hard_drive:
         print("skip emb generation, loading emb from given path")
-        return None, swe_pooling
+        return None
 
     model.eval()
     embedding = []
@@ -82,6 +82,6 @@ def get_embedding(
     model.train()
 
     if write_to_hard_drive:
-        return None, swe_pooling
+        return None
 
-    return torch.cat(embedding, dim=0), swe_pooling
+    return torch.cat(embedding, dim=0)

@@ -3,13 +3,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+import os
 import numpy as np
 from accelerate import Accelerator
 
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
 
-_VERSION = "2026-05-09"
+_VERSION = "2026-05-16"
 
 class LambdaNetTrainer:
     """
@@ -152,6 +153,7 @@ class LambdaNetTrainer:
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
         if not resume: # reset the model weights
+            print("reset weights of lambdanet")
             self.model.apply(reset_weights)
 
         # Build dataloaders

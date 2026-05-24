@@ -1,9 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=regLr.3e-5_scaleLrFactor.5_sweFreeze.True_e.2.2_nclusters.1024_seed.100_nsamples.12M
-#SBATCH -A scavenger-h200
-#SBATCH -p scavenger-h200
+#SBATCH --job-name=unconstrained_seed.300
+#SBATCH -A naderilab_h200
+#SBATCH -p h200-hp
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
+#SBATCH --exclude=dcc-h200-gpu-05
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -65,8 +66,8 @@ srun \
     strategy.n_steps=4000 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
-    strategy.n_clusters=1024 \
-    strategy.epsilon=2.2 \
+    strategy.n_clusters=512 \
+    strategy.epsilon=1000 \
     strategy.swap=True \
     strategy.dual_lr_gamma=0.9 \
     strategy.dual_lr_stepsize=400 \
@@ -82,8 +83,8 @@ srun \
     strategy.max_rds=12 \
     strategy.save_intermediates=False \
     strategy.pooling_method=swe \
-    strategy.scale_lr_factor=5 \
+    strategy.scale_lr_factor=3 \
     strategy.resume=True \
-    seed=100 \
-    dataset=uniref50_0.2
+    seed=300 \
+    dataset=uniref50_0.1
 "
