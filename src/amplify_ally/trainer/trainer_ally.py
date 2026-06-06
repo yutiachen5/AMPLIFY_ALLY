@@ -32,6 +32,9 @@ _VERSION = "2026-05-16"
 print(f"trainer_lambdanet version: {v_reg_head}")
 print(f"trainer_ally version: {_VERSION}")
 
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 def evaluate(
     model: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,

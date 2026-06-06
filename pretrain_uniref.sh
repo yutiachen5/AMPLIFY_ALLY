@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=regLr.3e-5_scaleLrFactor.5_sweFreeze.True_e.2.2_nclusters.1024_seed.100_nsamples.12M
+#SBATCH --job-name=regLr.3e-5_scaleLrFactor.2_ceiling.1e-3_mean_e.2.2_nclusters.512_seed.100
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -44,8 +44,8 @@ srun \
     --mixed_precision=bf16 \
     --gradient_clipping=1.0 \
     /hpc/group/naderilab/eleanor/AMPLIFY_ALLY/scripts/pretrain.py \
-    hydra.run.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
-    wandb.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
+    hydra.run.dir=/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/"$SLURM_JOB_NAME" \
+    wandb.dir=/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/"$SLURM_JOB_NAME" \
     wandb.name=$SLURM_JOB_NAME \
     model=[amplify,120M] \
     optimizer=adamw \
@@ -55,7 +55,7 @@ srun \
     scheduler=cosine_decay \
     scheduler.warmup_steps=0 \
     scheduler.final_step=900000 \
-    trainer.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
+    trainer.dir=/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/"$SLURM_JOB_NAME" \
     trainer.max_steps=48000 \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
@@ -65,7 +65,7 @@ srun \
     strategy.n_steps=4000 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
-    strategy.n_clusters=1024 \
+    strategy.n_clusters=512 \
     strategy.epsilon=2.2 \
     strategy.swap=True \
     strategy.dual_lr_gamma=0.9 \
@@ -81,9 +81,9 @@ srun \
     strategy.optimizer_lr=3e-5 \
     strategy.max_rds=12 \
     strategy.save_intermediates=False \
-    strategy.pooling_method=swe \
-    strategy.scale_lr_factor=5 \
+    strategy.pooling_method=mean \
+    strategy.scale_lr_factor=2 \
     strategy.resume=True \
     seed=100 \
-    dataset=uniref50_0.2
+    dataset=uniref50_0.1
 "

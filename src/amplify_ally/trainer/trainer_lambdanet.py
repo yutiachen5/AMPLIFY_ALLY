@@ -64,7 +64,8 @@ class LambdaNetTrainer:
         self.trained_lambdas = lambdas[self.trained_idx]
 
         # adjust learning rate
-        scaled_lr = self.base_lr * (self.scale_lr_factor ** (rd-1))
+        max_lr = 1e-3  # ceiling 
+        scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd - 1)), max_lr)
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
         print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-1} → {scaled_lr:.2e}")
