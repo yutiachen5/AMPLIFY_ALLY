@@ -25,15 +25,9 @@ from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloa
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..inference import get_embedding, pooling, save_embedding, SWE_Pooling
-from .trainer_lambdanet import LambdaNetTrainer, _VERSION as v_reg_head
+from ..utils import _save_aux_state, _load_aux_state
+from .trainer_lambdanet import LambdaNetTrainer
 
-
-_VERSION = "2026-05-16"
-print(f"trainer_lambdanet version: {v_reg_head}")
-print(f"trainer_ally version: {_VERSION}")
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
 
 def evaluate(
     model: torch.nn.Module,
@@ -192,6 +186,9 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
+    if cfg.trainer.resume and it > 0:
+        accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
+        lambdas, slacks, flag = _load_aux_state(chk_dir, it, dtype_pad_mask)
     reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
     if cfg.strategy.pooling_method == "swe":
@@ -204,7 +201,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Save the model when receiving the signal SIGTERM
     def handler(signum, frame):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
-        accelerator.save_state()
+        accelerator.save_state() # this will increment the it number
+        _save_aux_state(chk_dir, project_config - 1, lambdas, slacks, flag)
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -452,9 +450,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                     # Reset the gradient
                     optimizer.zero_grad()
 
-                    # Save the model from the main process
+                    # Save emb mdl and aux stuff from the main process
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
-                        accelerator.save_state() # .safetensor
+                        accelerator.save_state() 
+                        _save_aux_state(chk_dir, project_config - 1, lambdas, slacks, flag)
 
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break
@@ -554,7 +553,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 accelerator.save_model(unwrapped, os.path.join(summary_dir, eval_set))
 
     if constrained:
-        # Save the final lambda values for future analysis — {record_id: lambda}
+        # Save the final lambda values for future analysis — {raw_seq: lambda}
         idx_np = np.asarray(idx_order, dtype=np.int64)
         lambdas_np = lambdas.detach().cpu().to(torch.float32).numpy()
         lambda_dict = {
@@ -565,8 +564,9 @@ def trainer_ally(cfg: DictConfig) -> None:
             with open(os.path.join(summary_dir, "lambdas.json"), "w") as f:
                 json.dump(lambda_dict, f, indent=2)
 
-        # save SWE pooling, this is expected to be the same as initialized model since Freeze=True
-        torch.save(swe_pooling.state_dict(), os.path.join(summary_dir, "swe.pt"))
+        # save SWE pooling
+        if cfg.strategy.pooling_method == "swe":
+            torch.save(swe_pooling.state_dict(), os.path.join(summary_dir, "swe.pt"))
 
     # Make sure that the wandb tracker finishes correctly and close the progress bar
     pbar.close()

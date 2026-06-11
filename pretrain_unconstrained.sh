@@ -1,10 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=unconstrained_seed.300
-#SBATCH -A naderilab_h200
-#SBATCH -p h200-hp
+#SBATCH --job-name=unconstrained_nsamples.12M_nsteps.8k_seed.100
+#SBATCH -A scavenger-h200
+#SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=2-00:00:00
-#SBATCH --exclude=dcc-h200-gpu-05
+#SBATCH --time=1-00:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
@@ -57,20 +56,20 @@ srun \
     scheduler.warmup_steps=0 \
     scheduler.final_step=900000 \
     trainer.dir=/cwork/yc583/logs/$SLURM_JOB_NAME \
-    trainer.max_steps=48000 \
+    trainer.max_steps=32000 \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=4000 \
+    trainer.save_steps=8000 \
     trainer.eval_steps=100 \
-    strategy.n_steps=4000 \
+    strategy.n_steps=8000 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
     strategy.n_clusters=512 \
     strategy.epsilon=1000 \
     strategy.swap=True \
     strategy.dual_lr_gamma=0.9 \
-    strategy.dual_lr_stepsize=400 \
+    strategy.dual_lr_stepsize=800 \
     strategy.max_epochs=100 \
     strategy.patience=5 \
     strategy.per_device_batch_size_emb=512 \
@@ -80,11 +79,11 @@ srun \
     strategy.write_to_hard_drive=False \
     strategy.print_every=1 \
     strategy.optimizer_lr=3e-5 \
-    strategy.max_rds=12 \
+    strategy.max_rds=4 \
     strategy.save_intermediates=False \
     strategy.pooling_method=swe \
     strategy.scale_lr_factor=3 \
     strategy.resume=True \
-    seed=300 \
+    seed=100 \
     dataset=uniref50_0.1
 "

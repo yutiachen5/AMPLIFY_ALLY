@@ -10,8 +10,6 @@ from accelerate import Accelerator
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
 
-_VERSION = "2026-05-16"
-
 class LambdaNetTrainer:
     """
     Trainer class for the LambdaNet model.

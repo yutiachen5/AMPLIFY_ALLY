@@ -1,0 +1,60 @@
+import os
+from typing import Tuple
+
+import numpy as np
+import torch
+
+
+def _save_aux_state(
+    chk_dir: str, 
+    it: int, 
+    lambdas: torch.Tensor, 
+    slacks: torch.Tensor, 
+    flag: np.ndarray
+) -> None:
+    """Save auxiliary state (lambdas, slacks, flag) alongside an accelerator checkpoint.
+
+    These objects are not managed by accelerator.save_state(), so we persist them
+    manually into the same checkpoint folder so resume can restore them.
+
+    Args:
+        chk_dir (str): Root checkpoints directory.
+        it (int): Checkpoint iteration number (matches accelerator's naming).
+        lambdas (torch.Tensor): Per-sample dual variables.
+        slacks (torch.Tensor): Per-sample slack variables.
+        flag (np.ndarray): Per-sample visit counters.
+    """
+    folder = os.path.join(chk_dir, f"checkpoint_{it}")
+    os.makedirs(folder, exist_ok=True)
+    np.save(os.path.join(folder, "lambdas.npy"), lambdas.detach().cpu().to(torch.float32).numpy())
+    np.save(os.path.join(folder, "slacks.npy"), slacks.detach().cpu().to(torch.float32).numpy())
+    np.save(os.path.join(folder, "flag.npy"), flag)
+
+
+def _load_aux_state(chk_dir: str, it: int, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+    """Load auxiliary state saved by _save_aux_state.
+
+    Args:
+        chk_dir (str): Root checkpoints directory.
+        it (int): Checkpoint iteration number to load from.
+        dtype (torch.dtype): dtype to cast lambdas/slacks tensors to.
+
+    Returns:
+        Tuple of (lambdas, slacks, flag).
+        Returns (None, None, None) with a warning if files are missing.
+    """
+    folder = os.path.join(chk_dir, f"checkpoint_{it}")
+    lambdas_path = os.path.join(folder, "lambdas.npy")
+    slacks_path = os.path.join(folder, "slacks.npy")
+    flag_path = os.path.join(folder, "flag.npy")
+
+    missing = [p for p in [lambdas_path, slacks_path, flag_path] if not os.path.exists(p)]
+    if missing:
+        print(f"[resume] WARNING: checkpoint files not found: {missing}. Starting from scratch.")
+        return None, None, None
+
+    lambdas = torch.from_numpy(np.load(lambdas_path)).to(dtype)
+    slacks = torch.from_numpy(np.load(slacks_path)).to(dtype)
+    flag = np.load(flag_path)
+    print(f"[resume] Loaded checkpoint state from {folder}")
+    return lambdas, slacks, flag

@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=sprot_nsteps.100_niters.1_rd.10_model.120M_lr.1e-5_nclusters.32_resume.True_dualStepsize.10_lr_gamma.0.6
-#SBATCH -A scavenger-h200
-#SBATCH -p scavenger-h200
+#SBATCH -A naderilab_h200
+#SBATCH -p h200-hp
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt

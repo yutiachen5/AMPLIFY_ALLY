@@ -8,7 +8,7 @@
 #SBATCH --time=1:00:00
 #SBATCH --mem=30G
 #SBATCH --cpus-per-task=2
-#SBATCH --array=0-216%10
+#SBATCH --array=0-216%20
 
 # RUN_NAME="ESM2-8M"
 
