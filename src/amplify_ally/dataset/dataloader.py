@@ -2,8 +2,8 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..tokenizer import ProteinTokenizer
-from .datasets import InMemoryProteinDataset, SavedEmbDataset, InMemoryEmbDataset
-from .data_collator import DataCollatorMLM
+from .datasets import InMemoryProteinDataset, SavedEmbDataset, InMemoryEmbDataset, ProteinGymDataset
+from .data_collator import DataCollatorMLM, ProteinGymCollator
 
 import gc
 import math
@@ -346,7 +346,7 @@ def update_mlm_dataloader(
     gc.collect()
 
     updated_idx_order = []
-    max_len = max(len(v) for v in cluster_to_samples.values())
+    max_len = max(len(v) for v in clusdtypeter_to_samples.values())
 
     for i in range(max_len):                
         for c in range(n_clusters):         
@@ -368,3 +368,44 @@ def update_mlm_dataloader(
         pin_memory=True,
         persistent_workers=False,
     )
+
+def get_proteingym_dataloader(
+    DMS_reference_file_path: str,
+    DMS_data_dir: str,
+    tokenizer: ProteinTokenizer,
+    max_length: int = 512,
+    batch_size: int = 256,
+    num_workers: int = 4,
+    excluded_indices: list | None = None,
+    **kwargs,
+):
+    """Build the ProteinGym dataloader. Call once and reuse across evaluations.
+ 
+    Args:
+        DMS_reference_file_path: Path to DMS_substitutions.csv.
+        DMS_data_dir: Path to folder with per-assay CSV files.
+        tokenizer: Tokenizer with encode() and mask_token_id.
+        max_length: Maximum sequence length for windowing.
+        batch_size: Number of unique positions per forward pass.
+        num_workers: DataLoader workers.
+        excluded_indices: Set of DMS integer indices to skip.
+ 
+    Returns:
+        (dataloader, dataset) — keep the dataset reference to read model_scores back.
+    """
+    dataset = ProteinGymDataset(
+        DMS_reference_file_path = DMS_reference_file_path,
+        DMS_data_dir = DMS_data_dir,
+        tokenizer = tokenizer,
+        max_length = max_length,
+        excluded_indices = excluded_indices,
+    )
+    dataloader = DataLoader(
+        dataset,
+        batch_size = batch_size,
+        shuffle = False,        # must stay False — order matters for score accumulation
+        collate_fn = proteingym_collate_fn,
+        num_workers = num_workers,
+        pin_memory = True,
+    )
+    return dataloader, dataset

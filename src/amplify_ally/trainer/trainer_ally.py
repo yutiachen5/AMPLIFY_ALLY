@@ -21,43 +21,14 @@ from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
 from ..metric import Metrics
 from ..loss import get_loss, get_lagrangian, update_dual_variables
-from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader
+from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..inference import get_embedding, pooling, save_embedding, SWE_Pooling
 from ..utils import _save_aux_state, _load_aux_state
 from .trainer_lambdanet import LambdaNetTrainer
+from .evaluation import evaluate, evaluate_proteingym
 
-
-def evaluate(
-    model: torch.nn.Module,
-    dataloader: torch.utils.data.DataLoader,
-    loss_fn: torch.nn.modules.loss._Loss,
-    vocab_size: int,
-) -> Tuple[int, int, int]:
-    """Evaluate the model on the dataloader provided.
-
-    Args:
-        model (torch.nn.Module): Model.
-        dataloader (torch.utils.data.DataLoader): Dataloader.
-        loss_fn (torch.nn.modules.loss._Loss): Loss function, returning mean value.
-        vocab_size (int): Total number of tokens in the vocabulary.
-
-    Returns:
-        Tuple[int,int,int]: Sum of per-token losses, sum of correct predictions, and number of predictions.
-    """
-    model.eval()
-    sum_val_loss, num_val_correct, num_val_pred = 0, 0, 0
-    with torch.no_grad():
-        for global_id, x, y, pad_mask in dataloader:
-            logits = model(x, pad_mask).logits
-            val_loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
-            num_val_pred += torch.sum(y != -100).item()
-            sum_val_loss += val_loss.item() * torch.sum(y != -100).item()
-            num_val_correct += torch.sum(torch.argmax(logits, dim=-1) == y).item()
-    model.train()
-
-    return num_val_pred, sum_val_loss, num_val_correct
 
 def trainer_ally(cfg: DictConfig) -> None:
     """Entrypoint for training a model with the given configuraiton.
@@ -171,6 +142,12 @@ def trainer_ally(cfg: DictConfig) -> None:
         dtype=dtype_pad_mask,
         seed=cfg.seed,
     )
+    pg_dataloader, pg_dataset = get_proteingym_dataloader(
+        **cfg.dataset.proteingym,
+        **cfg.tokenizer,
+        **cfg.trainer.train,
+        **cfg.strategy,
+    )
     collator = train_dataloader.collate_fn
 
     # Constrained learning or not
@@ -202,7 +179,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     def handler(signum, frame):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
         accelerator.save_state() # this will increment the it number
-        _save_aux_state(chk_dir, project_config - 1, lambdas, slacks, flag)
+        _save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -410,15 +387,26 @@ def trainer_ally(cfg: DictConfig) -> None:
                     if metrics["num_steps"] % cfg.trainer.eval_steps == 0:
                         for k, v in eval_dataloaders.items():
                             num_val_pred, sum_val_loss, num_val_correct = evaluate(
-                                model,
-                                v,
-                                loss_fn_mean,
-                                cfg.tokenizer.vocab_size,
+                                model=model,
+                                dataloader=v,
+                                loss_fn=loss_fn_mean,
+                                vocab_size=cfg.tokenizer.vocab_size,
                             )
                             metrics[f"local_{k}_sum_val_loss"] = sum_val_loss
                             metrics[f"local_{k}_num_val_correct"] = num_val_correct
                             metrics[f"local_{k}_num_val_pred"] = num_val_pred
 
+                        # may use longer interval??
+                        if accelerator.is_main_process:
+                            proteingym_scc = evaluate_proteingym(
+                                model=model,
+                                dataloader=pg_dataloader,
+                                dataset=pg_dataset,
+                                device=accelerator.device,
+                                pad_token_id=cfg.tokenizer.pad_token_id,
+                                dtype=dtype_pad_mask,
+                            )
+                            metrics["proteingym_scc"] = proteingym_scc
                     # Log metrics
                     if metrics["num_steps"] % cfg.wandb.log_interval == 0:
                         # https://deepspeed.readthedocs.io/en/latest/zero3.html#deepspeed.utils.safe_get_full_grad
@@ -453,7 +441,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     # Save emb mdl and aux stuff from the main process
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
                         accelerator.save_state() 
-                        _save_aux_state(chk_dir, project_config - 1, lambdas, slacks, flag)
+                        _save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
 
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break

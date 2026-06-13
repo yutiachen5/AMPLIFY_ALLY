@@ -1,5 +1,5 @@
 import torch
-from typing import Tuple, Iterator
+from typing import Tuple, Iterator, List
 from itertools import islice, zip_longest, repeat, chain
 from torch.utils.data import IterableDataset, get_worker_info, Dataset
 
@@ -9,6 +9,9 @@ import os
 import random
 import hashlib
 import numpy as np
+import pandas as pd
+
+from ..tokenizer import ProteinTokenizer
 
 
 class IterableProteinDataset(IterableDataset):
@@ -161,3 +164,112 @@ class SavedEmbDataset(Dataset):
         l = self.lambdas[global_id] 
 
         return emb, l
+
+
+def get_sequence_window(focus_seq, pos_idx, max_length=512):
+    """Extract a window of length max_length centered around pos_idx.
+    If the sequence is shorter than max_length, return the full sequence.
+    """
+    seq_len = len(focus_seq)
+    if seq_len <= max_length:
+        return focus_seq, pos_idx
+ 
+    half  = max_length // 2
+    start = max(0, pos_idx - half)
+    end   = start + max_length
+ 
+    if end > seq_len: 
+        end   = seq_len
+        start = end - max_length
+ 
+    return focus_seq[start:end], pos_idx - start
+ 
+ 
+def get_mutation_info(mutant):
+    """Parse 'A42G' or 'A42G:L100V' into [(from_AA, position, to_AA), ...]."""
+    mutations = []
+    for m in mutant.split(":"):
+        mutations.append((m[0], int(m[1:-1]), m[-1]))
+    return mutations
+
+class ProteinGymDataset(Dataset):
+    """Each item is one unique masked position across all assays.
+ 
+    The dataloader batches these items together. After the forward pass,
+    log-probs are fanned out to every mutant that references that position.
+ 
+    Args:
+        DMS_reference_file_path: Path to DMS_substitutions.csv.
+        DMS_data_dir: Path to folder with per-assay CSV files.
+        tokenizer: Tokenizer with encode() and mask_token_id.
+        max_length: Maximum sequence length; longer sequences are windowed.
+        excluded_indices: Set of DMS integer indices to skip.
+    """
+ 
+    def __init__(
+        self, 
+        DMS_reference_file_path: str,
+        DMS_data_dir: str, 
+        tokenizer: ProteinTokenizer, 
+        max_length: int =512,
+        excluded_indices: list | None = None,
+    ):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.mask_tok_id = tokenizer.mask_token_id
+ 
+        mapping = pd.read_csv(DMS_reference_file_path)
+        assay_ids = [i for i in range(len(mapping)) if i not in excluded_indices]
+
+        self.items = []
+        self.assay_scores = {}
+
+        for i in assay_ids:
+            row = mapping.iloc[i]
+            dms_id = row["DMS_id"]
+            dms_file = row["DMS_filename"]
+            target_seq = row["target_seq"].upper()
+            dms_path = os.path.join(DMS_data_dir, dms_file)
+
+            dms_data = pd.read_csv(dms_path, low_memory=False)
+            self.assay_scores[dms_id] = {
+                "dms_scores": dms_data["DMS_score"].values.copy(),
+                "model_scores": np.zeros(len(dms_data)),
+            }
+
+            pos_to_items = {} # pos_idx -> [(mutant_idx1, wt_id1, my_id1), (mutant_idx2, wt_id2, my_id2), ...]
+            for mutant_idx, mutant in enumerate(dms_data["mutant"].values):
+                for from_AA, position, to_AA in get_mutation_info(mutant):
+                    pos_idx = position - 1
+
+                    wt_id = tokenizer.encode(from_AA, add_special_tokens=False)[0]
+                    mt_id = tokenizer.encode(to_AA, add_special_tokens=False)[0]
+                    pos_to_items.setdefault(pos_idx, []).append((mutant_idx, wt_id, mt_id))
+
+            for pos_idx, values in pos_to_items.items():
+                seq_window, new_pos_idx = get_sequence_window(target_seq, pos_idx, max_length)
+                enc_seq_window = tokenizer.encode(seq_window)
+                self.items.append({
+                    "dms_idx": dms_id, # DMS_sub_0, ...
+                    "pos": pos_idx, # mutant pos
+                    "new_pos": new_pos_idx, # mutant pos in seq window
+                    "enc_seq": enc_seq_window, # encoded seq window in target seq
+                    "mutants": values # [(mutant_idx, wt_id, mt_id), ...]
+                })
+
+    def __len__(self):
+        return len(self.items)
+ 
+    def __getitem__(self, idx):
+        item = self.items[idx]
+
+        # mask encoded seq for model input
+        enc_seq = torch.tensor(item["enc_seq"], dtype=torch.long).clone()
+        mask_pos = item["new_pos"]
+        enc_seq[mask_pos + 1] = self.mask_tok_id # +1 for BOS
+        return {
+            "masked_ids": enc_seq, # (max_len,)
+            "new_pos": item["new_pos"], 
+            "dms_idx": item["dms_idx"], 
+            "mutants": item["mutants"], # list 
+        }

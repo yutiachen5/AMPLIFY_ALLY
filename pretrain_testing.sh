@@ -1,16 +1,16 @@
 #!/bin/bash
-#SBATCH --job-name=testing_mdl_savings
+#SBATCH --job-name=testing_pg
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
-#SBATCH --time=1-00:00:00
+#SBATCH --time=1:00:00
 
 #SBATCH --output=%x_output.txt
 #SBATCH --error=%x_error.txt
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=255G
+#SBATCH --mem=60G
 #SBATCH --signal=TERM@60
 
 export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))

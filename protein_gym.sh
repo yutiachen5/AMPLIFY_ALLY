@@ -17,7 +17,7 @@ CHECKPOINT=11
 BASE_DIR="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs"
 MDL_PATH="${BASE_DIR}/${RUN_NAME}/checkpoints/checkpoint_${CHECKPOINT}/model.pt"
 CONFIG_PATH="${BASE_DIR}/${RUN_NAME}/.hydra/config.yaml"
-OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/ProteinGym/output/${RUN_NAME}"
+OUT_PATH="/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/downstream_tasks/ProteinGym/output/${RUN_NAME}"
 
 mkdir -p ${OUT_PATH}
 

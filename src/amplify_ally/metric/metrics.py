@@ -12,8 +12,8 @@ class Metrics(defaultdict):
     def __init__(self):
         super().__init__(int)
 
-        self.best_val_ppl = {"uniprot": float("inf"), "oas": float("inf"), "pdb": float("inf")}
-        self.best_mdl_state = {"uniprot": None, "oas": None, "pdb": None}
+        self.best_val_ppl = {"uniprot": float("inf"), "oas": float("inf"), "pdb": float("inf"), "pg": float("-inf")}
+        self.best_mdl_state = {"uniprot": None, "oas": None, "pdb": None, "pg": None}
 
     def state_dict(self):
         return dict(self)
@@ -22,7 +22,21 @@ class Metrics(defaultdict):
         for k, v in state_dict.items():
             self[k] = v
 
+    def _is_better(self, eval_set, current_val):
+        if eval_set == "pg":
+            return current_val > self.best_val_ppl[eval_set]
+        return current_val < self.best_val_ppl[eval_set]
+
+    def _save_best(self, eval_set, current_val, accelerator, model):
+        self.best_val_ppl[eval_set] = current_val
+        unwrapped = accelerator.unwrap_model(model)
+        self.best_mdl_state[eval_set] = copy.deepcopy(
+            {k: v.cpu() for k, v in unwrapped.state_dict().items()}
+        )
+
     def log(self, accelerator: Accelerator, json_path: str, model=None):
+        pg_scc = self.pop("proteingym_scc", 0.0) # this is only on the main process not other devices
+
         # Aggregate ALL metrics across devices (only required for local counters!)
         metrics_agg = Tensor(list(self.values())).to(accelerator.device, non_blocking=True)
         metrics_agg = accelerator.reduce(metrics_agg, reduction="sum").detach().cpu().numpy()
@@ -32,6 +46,7 @@ class Metrics(defaultdict):
         self["num_samples"] = self["num_samples"] + metrics_agg["local_num_samples"]
         self["num_tokens"] = self["num_tokens"] + metrics_agg["local_num_tokens"]
         self["num_masked_tokens"] = self["num_masked_tokens"] + metrics_agg["local_num_train_pred"]
+        self["proteingym_scc"] = pg_scc
 
         # Build the metrics to log
         metrics_log = dict()
@@ -47,6 +62,7 @@ class Metrics(defaultdict):
         metrics_log["lambda_mean"] = self["lambda_mean"]
         metrics_log["slack_mean"] = self["slack_mean"]
         metrics_log["constraint_violations"] = self["constraint_violations"]
+        metrics_log["proteingym_scc"] = self["proteingym_scc"]
         
         if metrics_agg["local_num_train_pred"] > 0:
             metrics_log["train_loss"] = metrics_agg["local_sum_train_loss"] / metrics_agg["local_num_train_pred"]
@@ -54,6 +70,7 @@ class Metrics(defaultdict):
                 metrics_agg["local_sum_train_loss"] / metrics_agg["local_num_train_pred"]
             )
             metrics_log["train_accuracy"] = metrics_agg["local_num_train_correct"] / metrics_agg["local_num_train_pred"]
+
         for eval_set in set(k.split("_")[1] for k in self.keys() if "_val_" in k):
             metrics_log[f"{eval_set}_val_loss"] = (
                 metrics_agg[f"local_{eval_set}_sum_val_loss"] / metrics_agg[f"local_{eval_set}_num_val_pred"]
@@ -64,10 +81,12 @@ class Metrics(defaultdict):
             metrics_log[f"{eval_set}_val_accuracy"] = (
                 metrics_agg[f"local_{eval_set}_num_val_correct"] / metrics_agg[f"local_{eval_set}_num_val_pred"]
             )
-            if metrics_log[f"{eval_set}_val_perplexity"] < self.best_val_ppl[eval_set]:
-                self.best_val_ppl[eval_set] = metrics_log[f"{eval_set}_val_perplexity"]
-                unwrapped = accelerator.unwrap_model(model)
-                self.best_mdl_state[eval_set] = copy.deepcopy({k: v.cpu() for k, v in unwrapped.state_dict().items()})
+
+            if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
+                self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
+
+        if pg_scc != 0 and self._is_better("pg", pg_scc):
+            self._save_best("pg", pg_scc, accelerator, model)
 
         # Log the metrics
         accelerator.log(metrics_log)
