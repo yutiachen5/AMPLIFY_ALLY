@@ -59,7 +59,7 @@ srun \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
     trainer.save_steps=10 \
-    trainer.eval_steps=10 \
+    trainer.eval_steps=2 \
     strategy.n_steps=10 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \

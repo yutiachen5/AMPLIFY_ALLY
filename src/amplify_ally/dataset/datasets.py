@@ -264,7 +264,7 @@ class ProteinGymDataset(Dataset):
         item = self.items[idx]
 
         # mask encoded seq for model input
-        enc_seq = torch.tensor(item["enc_seq"], dtype=torch.long).clone()
+        enc_seq = torch.as_tensor(item["enc_seq"], dtype=torch.long).clone().detach()
         mask_pos = item["new_pos"]
         enc_seq[mask_pos + 1] = self.mask_tok_id # +1 for BOS
         return {

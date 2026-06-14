@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=regLr.3e-5_scaleLrFactor.3_ceiling.1e-3_mean_e.2.2_nclusters.512_seed.100_nsamples.12M_nsteps.8k
+#SBATCH --job-name=regLr.3e-5_scaleLrFactor.3_ceiling.1e-3_mean_e.2.2_nclusters.512_seed.100_nsamples.12M_nsteps.7k
 #SBATCH -A scavenger-h200
 #SBATCH -p scavenger-h200
 #SBATCH --gres=gpu:h200:1
@@ -56,20 +56,20 @@ srun \
     scheduler.warmup_steps=0 \
     scheduler.final_step=900000 \
     trainer.dir=/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/"$SLURM_JOB_NAME" \
-    trainer.max_steps=32000 \
+    trainer.max_steps=28000 \
     trainer.train.per_device_batch_size=256 \
     trainer.validation.per_device_batch_size=512 \
     trainer.gradient_accumulation_steps=2 \
-    trainer.save_steps=8000 \
+    trainer.save_steps=7000 \
     trainer.eval_steps=100 \
-    strategy.n_steps=8000 \
+    strategy.n_steps=7000 \
     strategy.slack_lr=0 \
     strategy.n_iters=1 \
     strategy.n_clusters=512 \
     strategy.epsilon=2.2 \
     strategy.swap=True \
     strategy.dual_lr_gamma=0.9 \
-    strategy.dual_lr_stepsize=800 \
+    strategy.dual_lr_stepsize=700 \
     strategy.max_epochs=100 \
     strategy.patience=5 \
     strategy.per_device_batch_size_emb=512 \

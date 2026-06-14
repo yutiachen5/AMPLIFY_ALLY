@@ -5,7 +5,6 @@ from typing import List, Tuple
 from ..tokenizer import ProteinTokenizer
 
 
-
 class DataCollatorMLM(object):
     def __init__(
         self,
@@ -152,20 +151,24 @@ def DataCollatorLambdaNet(batch):
         "flag": torch.tensor(flags, dtype=torch.long),
     }
 
-def ProteinGymCollator(batch):
-    """Pad and stack a batch of items from ProteinGymDataset.
-    """
-    max_len = max(b["masked_ids"].size(0) for b in batch)
-    pad_tok_id = tokenizer.pad_token_id
+class ProteinGymCollator:
+    def __init__(self, pad_token_id: int, pad_to_multiple_of: int = 8):
+        self.pad_token_id = pad_token_id
+        self.pad_to_multiple_of = pad_to_multiple_of
 
-    padded_seq = torch.full((len(batch), max_len), pad_tok_id, dtype=torch.long)
-    for j, b in enumerate(batch):
-        L = b["masked_ids"].size(0)
-        padded[j, :L] = b["masked_ids"]
+    def __call__(self, batch: List[dict]) -> dict:
+        # padding
+        max_len = max(b["masked_ids"].size(0) for b in batch)
+        if max_len % self.pad_to_multiple_of != 0:
+            max_len = ((max_len // self.pad_to_multiple_of) + 1) * self.pad_to_multiple_of # xformer attention layer requires this
+        padded_seq = torch.full((len(batch), max_len), self.pad_token_id, dtype=torch.long)
 
-    return {
-        "masked_ids":  padded_seq,  # (B, max_len)
-        "new_pos": torch.tensor([b["new_pos"] for b in batch]), # (B,)
-        "dms_idx": [b["dms_idx"]  for b in batch], # list[str]
-        "mutants": [b["mutants"]   for b in batch],   # list[list]
-    }
+        for j, b in enumerate(batch):
+            L = b["masked_ids"].size(0)
+            padded_seq[j, :L] = b["masked_ids"]
+        return {
+            "masked_ids": padded_seq,
+            "new_pos": torch.tensor([b["new_pos"]  for b in batch]),
+            "dms_idx": [b["dms_idx"] for b in batch],
+            "mutants": [b["mutants"] for b in batch],
+        }

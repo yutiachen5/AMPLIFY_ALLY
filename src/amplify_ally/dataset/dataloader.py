@@ -346,7 +346,7 @@ def update_mlm_dataloader(
     gc.collect()
 
     updated_idx_order = []
-    max_len = max(len(v) for v in clusdtypeter_to_samples.values())
+    max_len = max(len(v) for v in cluster_to_samples.values())
 
     for i in range(max_len):                
         for c in range(n_clusters):         
@@ -372,11 +372,17 @@ def update_mlm_dataloader(
 def get_proteingym_dataloader(
     DMS_reference_file_path: str,
     DMS_data_dir: str,
-    tokenizer: ProteinTokenizer,
+    vocab_path: str,
+    pad_token_id: int,
+    mask_token_id: int,
+    bos_token_id: int,
+    eos_token_id: int,
+    unk_token_id: int,
+    other_special_token_ids: list | None,
     max_length: int = 512,
     batch_size: int = 256,
-    num_workers: int = 4,
     excluded_indices: list | None = None,
+    pad_to_multiple_of: int = 8,
     **kwargs,
 ):
     """Build the ProteinGym dataloader. Call once and reuse across evaluations.
@@ -384,15 +390,23 @@ def get_proteingym_dataloader(
     Args:
         DMS_reference_file_path: Path to DMS_substitutions.csv.
         DMS_data_dir: Path to folder with per-assay CSV files.
-        tokenizer: Tokenizer with encode() and mask_token_id.
         max_length: Maximum sequence length for windowing.
         batch_size: Number of unique positions per forward pass.
         num_workers: DataLoader workers.
-        excluded_indices: Set of DMS integer indices to skip.
+        excluded_indices: List of DMS integer indices to skip.
  
     Returns:
         (dataloader, dataset) — keep the dataset reference to read model_scores back.
     """
+    tokenizer = ProteinTokenizer(
+        vocab_path,
+        pad_token_id,
+        mask_token_id,
+        bos_token_id,
+        eos_token_id,
+        unk_token_id,
+        other_special_token_ids,
+    )
     dataset = ProteinGymDataset(
         DMS_reference_file_path = DMS_reference_file_path,
         DMS_data_dir = DMS_data_dir,
@@ -404,8 +418,8 @@ def get_proteingym_dataloader(
         dataset,
         batch_size = batch_size,
         shuffle = False,        # must stay False — order matters for score accumulation
-        collate_fn = proteingym_collate_fn,
-        num_workers = num_workers,
-        pin_memory = True,
+        collate_fn = ProteinGymCollator(pad_token_id, pad_to_multiple_of),
+        num_workers = 0, # hard-coded since it is on main process only
+        pin_memory = False,
     )
     return dataloader, dataset
