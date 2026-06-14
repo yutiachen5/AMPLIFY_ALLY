@@ -155,3 +155,4 @@ jobs/
 
 # specified file types
 *.txt
+*.sh
