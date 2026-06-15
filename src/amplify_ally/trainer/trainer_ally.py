@@ -25,7 +25,7 @@ from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloa
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..inference import get_embedding, pooling, save_embedding, SWE_Pooling
-from ..utils import _save_aux_state, _load_aux_state
+from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 
@@ -43,7 +43,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     chk_dir = os.path.join(cfg.trainer.dir, "checkpoints")
 
-    # Delete the folder if resume is disable and folder exists
+    # Delete the folder if resume is disable and folder exists 
     if cfg.trainer.resume is False:
         shutil.rmtree(chk_dir, ignore_errors=True)
     elif os.path.exists(chk_dir):
@@ -70,11 +70,12 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialise the wandb run and pass wandb parameters
     os.makedirs(cfg.wandb.dir, exist_ok=True)
+    run_id = get_wandb_run_id(dir = cfg.wandb.dir, resume = cfg.trainer.resume, is_main_process = accelerator.is_main_process)
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
         init_kwargs={
             "wandb": {
-                "name": cfg.wandb.name,
+                "name": cfg.wandb.name, # this should be the same as old job if resuming
                 "entity": cfg.wandb.entity,
                 "config": OmegaConf.to_container(cfg)
                 | {"distributed_type": accelerator.distributed_type}
@@ -84,6 +85,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 "mode": cfg.wandb.mode,
                 "anonymous": "allow",
                 "resume": cfg.trainer.resume,
+                "id": run_id, # the run to resume tracking on wandb
             }
         },
     )
@@ -165,7 +167,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
     if cfg.trainer.resume and it > 0:
         accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, slacks, flag = _load_aux_state(chk_dir, it, dtype_pad_mask)
+        lambdas, slacks, flag = load_aux_state(chk_dir, it, dtype_pad_mask)
     reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
     if cfg.strategy.pooling_method == "swe":
@@ -179,7 +181,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     def handler(signum, frame):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
         accelerator.save_state() # this will increment the it number
-        _save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
+        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -441,7 +443,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     # Save emb mdl and aux stuff from the main process
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
                         accelerator.save_state() 
-                        _save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
 
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break

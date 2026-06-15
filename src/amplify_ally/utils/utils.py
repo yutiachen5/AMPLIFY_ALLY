@@ -1,11 +1,12 @@
 import os
+import wandb
+import numpy as np
 from typing import Tuple
 
-import numpy as np
 import torch
 
 
-def _save_aux_state(
+def save_aux_state(
     chk_dir: str, 
     it: int, 
     lambdas: torch.Tensor, 
@@ -31,7 +32,7 @@ def _save_aux_state(
     np.save(os.path.join(folder, "flag.npy"), flag)
 
 
-def _load_aux_state(chk_dir: str, it: int, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+def load_aux_state(chk_dir: str, it: int, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
     """Load auxiliary state saved by _save_aux_state.
 
     Args:
@@ -58,3 +59,20 @@ def _load_aux_state(chk_dir: str, it: int, dtype: torch.dtype) -> Tuple[torch.Te
     flag = np.load(flag_path)
     print(f"[resume] Loaded checkpoint state from {folder}")
     return lambdas, slacks, flag
+
+def get_wandb_run_id(dir: str, resume: bool, is_main_process: bool) -> str:
+    run_id_path = os.path.join(dir, "wandb_run_id.txt")
+
+    if resume and os.path.exists(run_id_path):
+        with open(run_id_path) as f:
+            run_id = f.read().strip()
+        print(f"[wandb] Resuming run {run_id}")
+    else:
+        run_id = wandb.util.generate_id()
+        if is_main_process:
+            os.makedirs(dir, exist_ok=True)
+            with open(run_id_path, "w") as f:
+                f.write(run_id)
+        print(f"[wandb] New run {run_id}")
+
+    return run_id

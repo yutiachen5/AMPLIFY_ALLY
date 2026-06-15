@@ -1,3 +1,3 @@
-__all__ = ["_save_aux_state", "_load_aux_state"]
+__all__ = ["save_aux_state", "load_aux_state", "get_wandb_run_id"]
 
-from .utils import _save_aux_state, _load_aux_state
+from .utils import save_aux_state, load_aux_state, get_wandb_run_id
