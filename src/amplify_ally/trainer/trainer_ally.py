@@ -3,7 +3,6 @@ import gc
 import re
 import sys
 import json
-import torch
 import signal
 import shutil
 import datetime 
@@ -13,6 +12,8 @@ from tqdm import tqdm
 from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
+import torch
+from torch.utils.data import DataLoader
 from accelerate import Accelerator, skip_first_batches
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
@@ -161,13 +162,28 @@ def trainer_ally(cfg: DictConfig) -> None:
     slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
+    idx_order = np.arange(len(dataset))
 
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
     if cfg.trainer.resume and it > 0:
         accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, slacks, flag = load_aux_state(chk_dir, it, dtype_pad_mask)
+        lambdas, slacks, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
+
+        # Rebuild the dataloader using the idx order from previous checkpoint
+        train_dataloader = DataLoader(
+                dataset=dataset.update(idx_order),
+                batch_size=cfg.trainer.train.per_device_batch_size,
+                shuffle=False,
+                collate_fn=collator,
+                num_workers=cfg.trainer.train.num_workers,
+                prefetch_factor=2,
+                pin_memory=True,
+                persistent_workers=False,
+            )
+        dataloader = accelerator.prepare_data_loader(train_dataloader)
+        
     reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
     if cfg.strategy.pooling_method == "swe":
@@ -181,7 +197,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     def handler(signum, frame):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
         accelerator.save_state() # this will increment the it number
-        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
+        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order)
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -442,8 +458,8 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                     # Save emb mdl and aux stuff from the main process
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
-                        accelerator.save_state() 
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag)
+                        accelerator.save_state()
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order)
 
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break
@@ -487,21 +503,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy, 
                     **cfg.trainer.train,
                 )
-
-                if cfg.strategy.save_intermediates:
-                    np.save(os.path.join(chk_dir, f"checkpoint_{rd}", "embeddings.npy"), embeddings.to(torch.float32).numpy())
-                    idx_np = np.asarray(idx_order, dtype=np.int64)
-                    flag_np = np.asarray(flag)
-                    actual_np = lambdas_tmp.detach().cpu().to(torch.float32).numpy() 
-                    pred_np = lambdas.detach().cpu().to(torch.float32).numpy()
-                    df = pd.DataFrame({
-                        "idx": idx_np,
-                        "flag": flag_np[idx_np],
-                        "lambda_act": actual_np[idx_np],
-                        "lambda_pred": pred_np[idx_np],
-                    })
-                    df.to_csv(os.path.join(chk_dir, f"checkpoint_{rd}", "lambdas.csv"), index=False, float_format="%.8f")
-                    del df, idx_np, flag_np, actual_np, pred_np
 
                 gc.collect()
                 if torch.cuda.is_available():
