@@ -35,7 +35,7 @@ class Metrics(defaultdict):
         )
 
     def log(self, accelerator: Accelerator, json_path: str, model=None):
-        pg_scc = self.pop("proteingym_scc", 0.0) # this is only on the main process not other devices
+        pg_scc = self.pop("proteingym_scc", None) # this is only on the main process not other devices
 
         # Aggregate ALL metrics across devices (only required for local counters!)
         metrics_agg = Tensor(list(self.values())).to(accelerator.device, non_blocking=True)
@@ -46,7 +46,8 @@ class Metrics(defaultdict):
         self["num_samples"] = self["num_samples"] + metrics_agg["local_num_samples"]
         self["num_tokens"] = self["num_tokens"] + metrics_agg["local_num_tokens"]
         self["num_masked_tokens"] = self["num_masked_tokens"] + metrics_agg["local_num_train_pred"]
-        self["proteingym_scc"] = pg_scc
+        if pg_scc is not None:
+            self["proteingym_scc"] = pg_scc
 
         # Build the metrics to log
         metrics_log = dict()
@@ -62,7 +63,6 @@ class Metrics(defaultdict):
         metrics_log["lambda_mean"] = self["lambda_mean"]
         metrics_log["slack_mean"] = self["slack_mean"]
         metrics_log["constraint_violations"] = self["constraint_violations"]
-        metrics_log["proteingym_scc"] = self["proteingym_scc"]
         
         if metrics_agg["local_num_train_pred"] > 0:
             metrics_log["train_loss"] = metrics_agg["local_sum_train_loss"] / metrics_agg["local_num_train_pred"]
@@ -85,8 +85,10 @@ class Metrics(defaultdict):
             if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
                 self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
 
-        if pg_scc != 0 and self._is_better("pg", pg_scc):
-            self._save_best("pg", pg_scc, accelerator, model)
+        if pg_scc is not None:
+            metrics_log["proteingym_scc"] = self["proteingym_scc"]
+            if self._is_better("pg", pg_scc):
+                self._save_best("pg", pg_scc, accelerator, model)
 
         # Log the metrics
         accelerator.log(metrics_log)

@@ -143,6 +143,7 @@ uniref
 uniref/
 ProteinGym/
 downstream_tasks/
+slurms/
 
 # Slurm jobs and logs
 *.out

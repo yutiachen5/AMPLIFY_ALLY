@@ -63,10 +63,10 @@ class LambdaNetTrainer:
 
         # adjust learning rate
         max_lr = 1e-3  # ceiling 
-        scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd - 1)), max_lr)
+        scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd-2)), max_lr) # rd starts from 2
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
-        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-1} → {scaled_lr:.2e}")
+        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
@@ -115,7 +115,6 @@ class LambdaNetTrainer:
 
         return torch.cat(lambda_pred, dim=0).detach().cpu()
 
-
     def reconstruct_lambdas(self, pred_lambdas: torch.Tensor) -> torch.Tensor:
         n = self.trained_idx.shape[0] + self.untrained_idx.shape[0]
         full_lambdas = torch.zeros(n, dtype=self.dtype)
@@ -123,7 +122,6 @@ class LambdaNetTrainer:
         full_lambdas[self.untrained_idx] = pred_lambdas
 
         return full_lambdas
-
 
     def get_lambdas(
         self,
@@ -151,9 +149,14 @@ class LambdaNetTrainer:
 
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
-        if not resume: # reset the model weights
+        if resume:
+            reg_path = os.path.join(save_dir, f"checkpoint_{rd-1}", "lambdanet.pt")
+            print(f"loading lambdanet from: {reg_path}")
+            self.model.load_state_dict(torch.load(reg_path, map_location=self.device))
+        else:
             print("reset weights of lambdanet")
             self.model.apply(reset_weights)
+        
 
         # Build dataloaders
         if write_to_hard_drive:

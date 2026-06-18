@@ -71,7 +71,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialise the wandb run and pass wandb parameters
     os.makedirs(cfg.wandb.dir, exist_ok=True)
-    run_id = get_wandb_run_id(dir = cfg.wandb.dir, resume = cfg.trainer.resume, is_main_process = accelerator.is_main_process)
+    run_id = get_wandb_run_id(dir=cfg.wandb.dir, resume=cfg.trainer.resume, is_main_process=accelerator.is_main_process)
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
         init_kwargs={
@@ -85,7 +85,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 "dir": cfg.wandb.dir,
                 "mode": cfg.wandb.mode,
                 "anonymous": "allow",
-                "resume": cfg.trainer.resume,
+                "resume": "allow" if cfg.trainer.resume else "never",
                 "id": run_id, # the run to resume tracking on wandb
             }
         },
@@ -164,6 +164,24 @@ def trainer_ally(cfg: DictConfig) -> None:
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
 
+    # Save embeddings to hard drive
+    if cfg.strategy.write_to_hard_drive:
+        emb_save_dir = os.path.join(cfg.trainer.dir, "embeddings")
+        os.makedirs(emb_save_dir, exist_ok=True)
+    else:
+        emb_save_dir = ""
+
+    # Initialzie lambdanet trainer
+    lambdanet_trainer = LambdaNetTrainer(
+        model=reg,
+        optimizer=optimizer_reg,
+        device=accelerator.device,
+        seed=cfg.seed,
+        accelerator=accelerator,
+        dtype=dtype_reg_head,
+        **cfg.strategy,
+    )
+
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
@@ -213,26 +231,70 @@ def trainer_ally(cfg: DictConfig) -> None:
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
-    # Save embeddings to hard drive
-    if cfg.strategy.write_to_hard_drive:
-        emb_save_dir = os.path.join(cfg.trainer.dir, "embeddings")
-        os.makedirs(emb_save_dir, exist_ok=True)
-    else:
-        emb_save_dir = ""
-
-    # Initialzie lambdanet trainer
-    lambdanet_trainer = LambdaNetTrainer(
-        model=reg,
-        optimizer=optimizer_reg,
-        device=accelerator.device,
-        seed=cfg.seed,
-        accelerator=accelerator,
-        dtype=dtype_reg_head,
-        **cfg.strategy,
-    )
-
     for rd in range(1, cfg.strategy.max_rds + 1):
         print(f"#### Round {rd} ####")
+
+        # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
+        if rd != cfg.strategy.max_rds and rd != 1:
+            if constrained:
+                # Extract embeddings after the first round and replace the old emb with new one in later rds
+                if rd == 2 or cfg.strategy.write_to_hard_drive == False:
+                    embeddings = get_embedding(
+                        model=model, 
+                        swe_pooling=swe_pooling,
+                        dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
+                        device=accelerator.device,
+                        dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
+                        save_dir=emb_save_dir,
+                        **cfg.strategy,
+                    )
+
+                # Update lambda value for the next rd
+                lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
+                lambdas = lambdanet_trainer.get_lambdas(
+                        rd=rd, 
+                        lambdas=lambdas,
+                        flag=flag,
+                        emb_dir=emb_save_dir,
+                        embeddings=embeddings,
+                        save_dir=chk_dir, 
+                        **cfg.strategy,
+                    ) # overwrite old lambdas with pred lambdas
+
+                # Update dataloder based on actual and predicted lambda
+                idx_order, dataloader = update_mlm_dataloader(
+                    dataset=dataset,
+                    collator=collator,
+                    embeddings=embeddings, 
+                    lambdas=lambdas, 
+                    seed=cfg.seed,
+                    emb_dir=emb_save_dir,
+                    dtype=dtype_pad_mask,
+                    **cfg.strategy, 
+                    **cfg.trainer.train,
+                )
+
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                embeddings = torch.zeros(len(dataset))
+                idx_order, dataloader = update_mlm_dataloader(
+                    dataset=dataset,
+                    collator=collator,
+                    embeddings=embeddings, 
+                    lambdas=lambdas, 
+                    seed=cfg.seed,
+                    emb_dir=emb_save_dir,
+                    dtype=dtype_pad_mask,
+                    **cfg.strategy, 
+                    **cfg.trainer.train,
+                )
+
+            dataloader = accelerator.prepare_data_loader(dataloader)
+
+            # Adjust dual learning rate dynamically 
+            dual_lr = cfg.strategy.dual_lr
 
         for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
             print("Iteration: ", iteration + 1)
@@ -414,7 +476,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                             metrics[f"local_{k}_num_val_correct"] = num_val_correct
                             metrics[f"local_{k}_num_val_pred"] = num_val_pred
 
-                        # may use longer interval??
+                    if metrics["num_steps"] % cfg.trainer.pg_eval_steps == 0:
                         if accelerator.is_main_process:
                             proteingym_scc = evaluate_proteingym(
                                 model=model,
@@ -464,67 +526,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                         break
 
-        # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
-        if rd != cfg.strategy.max_rds:
-            if constrained:
-                # Extract embeddings after the first round and replace the old emb with new one in later rds
-                if rd == 1 or cfg.strategy.write_to_hard_drive == False:
-                    embeddings = get_embedding(
-                        model=model, 
-                        swe_pooling=swe_pooling,
-                        dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
-                        device=accelerator.device,
-                        dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
-                        save_dir=emb_save_dir,
-                        **cfg.strategy,
-                    )
-
-                # Update lambda value for the next rd
-                lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas = lambdanet_trainer.get_lambdas(
-                        rd=rd,
-                        lambdas=lambdas,
-                        flag=flag,
-                        emb_dir=emb_save_dir,
-                        embeddings=embeddings,
-                        save_dir=chk_dir, 
-                        **cfg.strategy,
-                    ) # overwrite old lambdas with pred lambdas
-
-                # Update dataloder based on actual and predicted lambda
-                idx_order, dataloader = update_mlm_dataloader(
-                    dataset=dataset,
-                    collator=collator,
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    seed=cfg.seed,
-                    emb_dir=emb_save_dir,
-                    dtype=dtype_pad_mask,
-                    **cfg.strategy, 
-                    **cfg.trainer.train,
-                )
-
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            else:
-                embeddings = torch.zeros(len(dataset))
-                idx_order, dataloader = update_mlm_dataloader(
-                    dataset=dataset,
-                    collator=collator,
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    seed=cfg.seed,
-                    emb_dir=emb_save_dir,
-                    dtype=dtype_pad_mask,
-                    **cfg.strategy, 
-                    **cfg.trainer.train,
-                )
-
-            dataloader = accelerator.prepare_data_loader(dataloader)
-
-            # Adjust dual learning rate dynamically 
-            dual_lr = cfg.strategy.dual_lr
 
         # Log metrics
         metrics["num_epochs"] += 1
