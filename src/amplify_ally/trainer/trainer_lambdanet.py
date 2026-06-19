@@ -1,11 +1,11 @@
+import os
+import numpy as np
+from accelerate import Accelerator
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-
-import os
-import numpy as np
-from accelerate import Accelerator
 
 from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
 
@@ -62,7 +62,7 @@ class LambdaNetTrainer:
         self.trained_lambdas = lambdas[self.trained_idx]
 
         # adjust learning rate
-        max_lr = 1e-3  # ceiling 
+        max_lr = 1e-4  # make this in config later??
         scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd-2)), max_lr) # rd starts from 2
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
@@ -232,8 +232,10 @@ class LambdaNetTrainer:
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
 
-        # Save the regression head
-        torch.save(best_state, os.path.join(save_dir, f"checkpoint_{rd}", "lambdanet.pt"))
+        # Save the regression head, mkdir since this happens at the begining of each rd
+        save_path = os.path.join(save_dir, f"checkpoint_{rd}", "lambdanet.pt")
+        os.makedirs(save_path, exist_ok=True)
+        torch.save(best_state, save_path)
 
         # Free per-round data
         self.lambdas = None

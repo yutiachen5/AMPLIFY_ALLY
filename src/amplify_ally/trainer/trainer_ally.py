@@ -293,7 +293,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             dataloader = accelerator.prepare_data_loader(dataloader)
 
-            # Adjust dual learning rate dynamically 
+            # reset dual lr to initial value 
             dual_lr = cfg.strategy.dual_lr
 
         for iteration in range(cfg.strategy.n_iters): # go through the loader n_iter times before updating the dataloader
