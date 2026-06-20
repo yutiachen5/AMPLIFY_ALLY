@@ -104,7 +104,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize embedding model, regression head, optimizer, scheduler, and SWE pooling if specified
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
-    reg = LambdaNet(input_dim=cfg.model.hidden_size)
+    reg, best_reg = LambdaNet(input_dim=cfg.model.hidden_size), None
     optimizer = get_optimizer(model, **cfg.optimizer)
     optimizer_reg = get_optimizer(reg, **cfg.strategy)
     scheduler = get_scheduler(optimizer, **cfg.scheduler)
@@ -235,7 +235,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         print(f"#### Round {rd} ####")
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
-        if rd != cfg.strategy.max_rds and rd != 1:
+        if rd != cfg.strategy.max_rds + 1 and rd != 1:
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
                 if rd == 2 or cfg.strategy.write_to_hard_drive == False:
@@ -251,7 +251,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas = lambdanet_trainer.get_lambdas(
+                lambdas, best_reg = lambdanet_trainer.get_lambdas(
                         rd=rd, 
                         lambdas=lambdas,
                         flag=flag,
@@ -521,9 +521,9 @@ def trainer_ally(cfg: DictConfig) -> None:
                     # Save emb mdl and aux stuff from the main process
                     if metrics["num_steps"] % cfg.trainer.save_steps == 0:
                         accelerator.save_state()
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg)
 
-                    if metrics["num_steps"] % cfg.strategy.n_steps == 0:
+                    if metrics["num_steps"] % cfg.strategy.n_steps == 0: # maybe combine the 2 saving params into 1 later??
                         break
 
 

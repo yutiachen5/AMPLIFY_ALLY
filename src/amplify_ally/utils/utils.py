@@ -13,6 +13,7 @@ def save_aux_state(
     slacks: torch.Tensor, 
     flag: np.ndarray,
     idx_order: np.ndarray,
+    best_reg: dict | None = None,
 ) -> None:
     folder = os.path.join(chk_dir, f"checkpoint_{it}")
     os.makedirs(folder, exist_ok=True)
@@ -20,6 +21,8 @@ def save_aux_state(
     np.save(os.path.join(folder, "slacks.npy"), slacks.detach().cpu().to(torch.float32).numpy())
     np.save(os.path.join(folder, "flag.npy"), flag)
     np.save(os.path.join(folder, "idx_order.npy"), np.asarray(idx_order, dtype=np.int64))
+    if best_reg is not None:
+        torch.save(best_reg, os.path.join(folder, "lambdanet.pt"))
 
 def load_aux_state(
     chk_dir: str, 

@@ -232,10 +232,10 @@ class LambdaNetTrainer:
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
 
-        # Save the regression head, mkdir since this happens at the begining of each rd
-        save_path = os.path.join(save_dir, f"checkpoint_{rd}", "lambdanet.pt")
-        os.makedirs(save_path, exist_ok=True)
-        torch.save(best_state, save_path)
+        # # Save the regression head, mkdir since this happens at the begining of each rd
+        # save_path = os.path.join(save_dir, f"checkpoint_{rd}")
+        # os.makedirs(save_path, exist_ok=True)
+        # torch.save(best_state, os.path.join(save_path, "lambdanet.pt"))
 
         # Free per-round data
         self.lambdas = None
@@ -244,4 +244,4 @@ class LambdaNetTrainer:
         self.untrained_idx = None
         self.trained_lambdas = None
 
-        return full_lambdas
+        return full_lambdas, best_state
