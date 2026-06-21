@@ -10,7 +10,6 @@ alpha: 0.01
 slack_lr: 0.01
 n_clusters: 128
 n_steps: 8000
-n_iters: 4
 swap: False
 
 # lambdanet training
