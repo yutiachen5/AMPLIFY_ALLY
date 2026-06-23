@@ -244,7 +244,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
                 if rd == rd_offset + 1 or rd == 2 or cfg.strategy.write_to_hard_drive == False:
-                    embeddings = get_embedding(
+                    embeddings, id_to_loc = get_embedding(
                         model=model, 
                         swe_pooling=swe_pooling,
                         dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
@@ -263,6 +263,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         emb_dir=emb_save_dir,
                         embeddings=embeddings,
                         save_dir=chk_dir, 
+                        id_to_loc=id_to_loc,
                         **cfg.strategy,
                     ) # overwrite old lambdas with pred lambdas
 

@@ -144,9 +144,7 @@ def get_emb_dataloader(
         batch_size=per_device_batch_size_emb,
         shuffle=False,
         collate_fn=collator,
-        num_workers=2,
-        pin_memory=True,
-        prefetch_factor=2
+        num_workers=0,
     )
 
 def get_reg_dataloaders_from_saved_emb_set(
@@ -157,14 +155,13 @@ def get_reg_dataloaders_from_saved_emb_set(
     val_size: float = 0.2,
     seed: int = 42,
     num_workers: int = 0,
+    shard_size: int = 1_000_000,
+    id_to_loc: dict | None = None,
     dtype: torch.dtype = torch.float32,
     kmeans: bool = False,
 ) -> Dict[str, DataLoader]:
     """
     Returns dict with keys: train, val, test.
-    Notes:
-      - persistent_workers only valid if num_workers > 0.
-      - prefetch_factor only valid if num_workers > 0.
     """
 
     loader_kwargs = dict(
@@ -179,18 +176,19 @@ def get_reg_dataloaders_from_saved_emb_set(
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 2
 
-    if kmeans:
-        kmeans_ds =  SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="kmeans")
-        return {"kmeans": DataLoader(kmeans_ds, **loader_kwargs)}
-    else:
-        train_ds = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="train")
-        val_ds   = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="val")
-        test_ds  = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="test")
-        return {
-            "train": DataLoader(train_ds, **loader_kwargs),
-            "val":   DataLoader(val_ds, **loader_kwargs),
-            "test":  DataLoader(test_ds, **loader_kwargs),
-        }
+    splits = ["kmeans"] if kmeans else ["train", "val", "test"]
+
+    return {
+        split: DataLoader(
+            dataset=SavedEmbDataset(
+                emb_dir=emb_dir, lambdas=lambdas, flag=flag, \
+                val_size=val_size, seed=seed, dtype=dtype, \
+                shard_size=shard_size, id_to_loc=id_to_loc, split=split
+            ),
+            **loader_kwargs
+        )
+        for split in splits
+    }
 
 def get_reg_dataloaders_from_in_memory_emb_set(
     embeddings: torch.Tensor,
@@ -309,6 +307,7 @@ def update_mlm_dataloader(
             seed=seed,
             batch_size=per_device_batch_size_kmeans,
             num_workers=num_workers,
+            id_to_loc=id_to_loc,
             kmeans=True,
             dtype=dtype
         )

@@ -131,6 +131,7 @@ class LambdaNetTrainer:
         emb_dir: str,
         save_dir: str,
         embeddings: torch.Tensor | None = None,
+        id_to_loc: dict | None = None,
         val_size: float = 0.2,
         seed: int = 42,
         max_epochs: int = 100,
@@ -140,6 +141,7 @@ class LambdaNetTrainer:
         write_to_hard_drive: bool = True,
         has_emb: bool = False,
         resume: bool = False,
+        shard_size: int = 1_000_000,
         **kwargs,
     ) -> torch.Tensor:
 
@@ -157,7 +159,6 @@ class LambdaNetTrainer:
             print("reset weights of lambdanet")
             self.model.apply(reset_weights)
         
-
         # Build dataloaders
         if write_to_hard_drive:
             if has_emb:
@@ -171,6 +172,8 @@ class LambdaNetTrainer:
                 val_size=val_size,
                 seed=seed,
                 num_workers=num_workers,
+                shard_size=shard_size,
+                id_to_loc=id_to_loc,
                 dtype=self.dtype,
             )
             scale, y_min = None, None
