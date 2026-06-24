@@ -22,13 +22,11 @@ optimizer_lr: 1e-4
 print_every: 1
 resume: True # whether to load lambdanet from previous checkpoint or not
 patience: 6
-scaler: min-max
 scale_lr_factor: 2
 
 # embedding pooling
 pooling_method: mean
 write_to_hard_drive: True
-has_emb: False
 shard_size: 1_000_000
 
 # save intermediate res for debugging

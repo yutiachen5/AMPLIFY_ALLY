@@ -1,4 +1,5 @@
-__all__ = ["AMPLIFY", "AMPLIFYConfig", "lambdanet"]
+__all__ = ["AMPLIFY", "AMPLIFYConfig", "LambdaNet", "SWE_Pooling"]
 
 from .amplify import AMPLIFY, AMPLIFYConfig
-from .reg_head import LambdaNet
+from .lambdanet import LambdaNet
+from .swe import SWE_Pooling

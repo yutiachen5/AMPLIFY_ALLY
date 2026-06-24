@@ -3,13 +3,12 @@ from typing import Tuple, Iterator, List
 from itertools import islice, zip_longest, repeat, chain
 from torch.utils.data import IterableDataset, get_worker_info, Dataset
 
-from typing import List
-
 import os
 import random
 import hashlib
 import numpy as np
 import pandas as pd
+from typing import List
 
 from ..tokenizer import ProteinTokenizer
 
@@ -107,105 +106,6 @@ class InMemoryEmbDataset(Dataset):
         return self.x_data.shape[0]
 
 
-class SavedEmbDataset(Dataset):
-    def __init__(
-        self,
-        emb_dir: str,
-        lambdas: torch.Tensor,
-        flag: np.ndarray,
-        dtype: torch.dtype = torch.float32,
-        val_size: float = 0.2,
-        seed: int = 42,
-        shard_size: int = 1_000_000,
-        id_to_loc: dict | None = None,
-        split: str = "train",
-        **kwargs,
-    ):
-        self.emb_dir = emb_dir
-        self.lambdas = lambdas
-        self.split = split
-        self.dtype = dtype
-        self.shard_size = shard_size
-        self.id_to_loc = id_to_loc
-
-        n = len(lambdas)
-
-        if split == "kmeans":
-            self.active_idx = np.arange(n, dtype=np.int64)
-            return
-
-        test_idx = np.flatnonzero(flag < 1).astype(np.int64)
-        train_val_idx = np.flatnonzero(flag >= 1).astype(np.int64)
-
-        rng = np.random.default_rng(seed)
-        n_val = int(round(len(train_val_idx) * val_size))
-
-        perm = rng.permutation(len(train_val_idx))
-        val_pos = perm[:n_val]
-        train_pos = perm[n_val:]
-
-        val_idx = train_val_idx[val_pos]
-        train_idx = train_val_idx[train_pos]
-
-        if split == "train":
-            self.active_idx = train_idx
-        elif split == "val":
-            self.active_idx = val_idx
-        elif split == "test":
-            self.active_idx = test_idx
-
-    def __len__(self):
-        return int(len(self.active_idx))
-
-    def _load_emb(self, global_id: int):
-        shard_id, local_id = self.id_to_loc[global_id]
-        emb_path = os.path.join(self.emb_dir, f"shard_{shard_id:04d}.npy")
-        ids = np.load(ids_path)
-
-        assert ids[local_id] == global_id, (
-            f"ID mismatch at shard={shard_id} local_id={local_id}: "
-            f"expected {global_id}, got {ids[local_id]}."
-        )        
-
-        emb = np.load(emb_path, mmap_mode="r")[local_id].copy()
-        if self.split != "kmeans":
-            return torch.from_numpy(emb).to(dtype=self.dtype)
-        return emb
-
-    def __getitem__(self, i: int):
-        global_id = int(self.active_idx[i])
-        emb = self._load_emb(global_id)
-        l = self.lambdas[global_id]
-        
-        return emb, l
-
-
-def get_sequence_window(focus_seq, pos_idx, max_length=512):
-    """Extract a window of length max_length centered around pos_idx.
-    If the sequence is shorter than max_length, return the full sequence.
-    """
-    seq_len = len(focus_seq)
-    if seq_len <= max_length:
-        return focus_seq, pos_idx
- 
-    half  = max_length // 2
-    start = max(0, pos_idx - half)
-    end   = start + max_length
- 
-    if end > seq_len: 
-        end   = seq_len
-        start = end - max_length
- 
-    return focus_seq[start:end], pos_idx - start
- 
- 
-def get_mutation_info(mutant):
-    """Parse 'A42G' or 'A42G:L100V' into [(from_AA, position, to_AA), ...]."""
-    mutations = []
-    for m in mutant.split(":"):
-        mutations.append((m[0], int(m[1:-1]), m[-1]))
-    return mutations
-
 class ProteinGymDataset(Dataset):
     """Each item is one unique masked position across all assays.
  
@@ -253,7 +153,7 @@ class ProteinGymDataset(Dataset):
 
             pos_to_items = {} # pos_idx -> [(mutant_idx1, wt_id1, my_id1), (mutant_idx2, wt_id2, my_id2), ...]
             for mutant_idx, mutant in enumerate(dms_data["mutant"].values):
-                for from_AA, position, to_AA in get_mutation_info(mutant):
+                for from_AA, position, to_AA in self.get_mutation_info(mutant):
                     pos_idx = position - 1
 
                     wt_id = tokenizer.encode(from_AA, add_special_tokens=False)[0]
@@ -261,7 +161,7 @@ class ProteinGymDataset(Dataset):
                     pos_to_items.setdefault(pos_idx, []).append((mutant_idx, wt_id, mt_id))
 
             for pos_idx, values in pos_to_items.items():
-                seq_window, new_pos_idx = get_sequence_window(target_seq, pos_idx, max_length)
+                seq_window, new_pos_idx = self.get_sequence_window(target_seq, pos_idx, max_length)
                 enc_seq_window = tokenizer.encode(seq_window)
                 self.items.append({
                     "dms_idx": dms_id, # DMS_sub_0, ...
@@ -270,6 +170,31 @@ class ProteinGymDataset(Dataset):
                     "enc_seq": enc_seq_window, # encoded seq window in target seq
                     "mutants": values # [(mutant_idx, wt_id, mt_id), ...]
                 })
+
+    def get_sequence_window(self, focus_seq, pos_idx, max_length=512):
+        """Extract a window of length max_length centered around pos_idx.
+        If the sequence is shorter than max_length, return the full sequence.
+        """
+        seq_len = len(focus_seq)
+        if seq_len <= max_length:
+            return focus_seq, pos_idx
+    
+        half  = max_length // 2
+        start = max(0, pos_idx - half)
+        end   = start + max_length
+    
+        if end > seq_len: 
+            end   = seq_len
+            start = end - max_length
+    
+        return focus_seq[start:end], pos_idx - start
+
+    def get_mutation_info(self, mutant):
+        """Parse 'A42G' or 'A42G:L100V' into [(from_AA, position, to_AA), ...]."""
+        mutations = []
+        for m in mutant.split(":"):
+            mutations.append((m[0], int(m[1:-1]), m[-1]))
+        return mutations
 
     def __len__(self):
         return len(self.items)

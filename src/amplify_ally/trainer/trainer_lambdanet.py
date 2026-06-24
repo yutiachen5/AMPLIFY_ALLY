@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from ..dataset import get_reg_dataloaders_from_saved_emb_set, get_reg_dataloaders_from_in_memory_emb_set
+from ..dataset import get_lambdanet_dataloaders
 
 
 class LambdaNetTrainer:
@@ -33,7 +33,7 @@ class LambdaNetTrainer:
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
         self.scale_lr_factor = scale_lr_factor
-        self.dtype = dtype
+        self.dtype = dtype # the dtype used in pretraining
         self.device = device
 
         self.model = model
@@ -46,10 +46,6 @@ class LambdaNetTrainer:
         self.trained_idx = None
         self.untrained_idx = None
         self.trained_lambdas = None
-
-    # ------------------------------------------------------------------
-    # Round setup
-    # ------------------------------------------------------------------
 
     def _setup_round(self, rd: int, lambdas: torch.Tensor, flag: np.ndarray) -> None:
         """Update per-round data and double the LR for a warm restart."""
@@ -70,10 +66,6 @@ class LambdaNetTrainer:
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
-
-    # ------------------------------------------------------------------
-    # Core train / validate / predict of regression head
-    # ------------------------------------------------------------------
 
     def train(self, dataloader: DataLoader) -> float:
         self.model.train()
@@ -128,7 +120,6 @@ class LambdaNetTrainer:
         rd: int,
         lambdas: torch.Tensor,
         flag: np.ndarray,
-        emb_dir: str,
         save_dir: str,
         embeddings: torch.Tensor | None = None,
         id_to_loc: dict | None = None,
@@ -152,42 +143,26 @@ class LambdaNetTrainer:
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
         if resume:
-            reg_path = os.path.join(save_dir, f"checkpoint_{rd-1}", "lambdanet.pt")
+            reg_path = os.path.join(save_dir, "checkpoints", f"checkpoint_{rd-1}", "lambdanet.pt")
             print(f"loading lambdanet from: {reg_path}")
             self.model.load_state_dict(torch.load(reg_path, map_location=self.device))
         else:
             print("reset weights of lambdanet")
             self.model.apply(reset_weights)
         
-        # Build dataloaders
-        if write_to_hard_drive:
-            if has_emb:
-                emb_dir = "/hpc/group/naderilab/eleanor/AMPLIFY_ALLY/logs/sprot_nsteps.100/embeddings"
-
-            loaders = get_reg_dataloaders_from_saved_emb_set(
-                emb_dir=emb_dir,
-                lambdas=self.lambdas,
-                flag=self.flag,
-                batch_size=self.per_device_batch_size,
-                val_size=val_size,
-                seed=seed,
-                num_workers=num_workers,
-                shard_size=shard_size,
-                id_to_loc=id_to_loc,
-                dtype=self.dtype,
-            )
-            scale, y_min = None, None
-        else:
-            scale, y_min, loaders = get_reg_dataloaders_from_in_memory_emb_set(
-                embeddings=embeddings,
-                lambdas=self.lambdas,
-                flag=self.flag,
-                device=self.device,
-                batch_size=self.per_device_batch_size,
-                val_size=val_size,
-                seed=seed,
-                num_workers=num_workers,
-            )
+        # Build dataloaders for lambdanet
+        scale, y_min, loaders = get_lambdanet_dataloaders(
+            embeddings=embeddings,
+            lambdas=self.lambdas,
+            flag=self.flag,
+            device=self.device,
+            batch_size=self.per_device_batch_size,
+            val_size=val_size,
+            seed=seed,
+            num_workers=num_workers,
+            emb_save_dir=os.path.join(save_dir, "embeddings"),
+            dtype=self.dtype,
+        )
 
         # Training loop with early stopping
         best_state = None
