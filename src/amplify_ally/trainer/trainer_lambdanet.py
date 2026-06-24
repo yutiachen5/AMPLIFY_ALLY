@@ -62,7 +62,7 @@ class LambdaNetTrainer:
         self.trained_lambdas = lambdas[self.trained_idx]
 
         # adjust learning rate
-        max_lr = 1e-4  # make this in config later??
+        max_lr = 1e-3  # make this in config later??
         scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd-2)), max_lr) # rd starts from 2
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
