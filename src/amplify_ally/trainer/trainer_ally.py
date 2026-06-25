@@ -25,10 +25,10 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..inference import get_embedding, pooling, save_embedding, SWE_Pooling
 from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
+from .embedder import Embedder
 
 
 def trainer_ally(cfg: DictConfig) -> None:
@@ -108,9 +108,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     optimizer = get_optimizer(model, **cfg.optimizer)
     optimizer_reg = get_optimizer(reg, **cfg.strategy)
     scheduler = get_scheduler(optimizer, **cfg.scheduler)
-    swe_pooling = SWE_Pooling(d_in=cfg.model.hidden_size, num_slices=cfg.model.hidden_size, \
-                                num_ref_points=cfg.trainer.train.max_length, freeze_swe=True) \
-                                if cfg.strategy.pooling_method == "swe" else None # freeze_swe is hard-coded to True now since we don't have memory to support SWE training
 
     # Log the number of parameters
     accelerator.log({"model_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)})
@@ -145,20 +142,21 @@ def trainer_ally(cfg: DictConfig) -> None:
         dtype=dtype_pad_mask,
         seed=cfg.seed,
     )
+    dataset = train_dataloader.dataset
+    collator = train_dataloader.collate_fn
+    emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
         **cfg.dataset.proteingym,
         **cfg.tokenizer,
         **cfg.trainer.train,
         **cfg.strategy,
     )
-    collator = train_dataloader.collate_fn
 
     # Constrained learning or not
     constrained = (cfg.strategy.epsilon != 1000)
 
     # Initialize parameters for constrained learning
     rd_offset = 0
-    dataset = train_dataloader.dataset
     lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
     slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
@@ -167,10 +165,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Save embeddings to hard drive
     if cfg.strategy.write_to_hard_drive:
-        emb_save_dir = os.path.join(cfg.trainer.dir, "embeddings")
-        os.makedirs(emb_save_dir, exist_ok=True)
-    else:
-        emb_save_dir = ""
+        os.makedirs(os.path.join(cfg.trainer.dir, "embeddings"), exist_ok=True)
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -183,9 +178,24 @@ def trainer_ally(cfg: DictConfig) -> None:
         **cfg.strategy,
     )
 
+    # Initialize embedder
+    embedder = Embedder(
+        save_dir=os.path.join(cfg.trainer.dir, "embeddings"),
+        device=accelerator.device,
+        dtype=dtype_pad_mask,
+        **cfg.strategy,
+        **cfg.trainer.train,
+    )
+
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
+
+    reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
+    eval_dataloaders = {k: accelerator.prepare_data_loader(v) for k, v in eval_dataloaders.items()}
+    emb_dataloader = accelerator.prepare_data_loader(emb_dataloader)
+
+    # Resume block
     if cfg.trainer.resume and it > 0:
         accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
         lambdas, slacks, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
@@ -207,11 +217,6 @@ def trainer_ally(cfg: DictConfig) -> None:
             )
         dataloader = accelerator.prepare_data_loader(train_dataloader)
         
-    reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
-    eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
-    if cfg.strategy.pooling_method == "swe":
-        swe_pooling = swe_pooling.to(device=accelerator.device) 
-
     # Get loss functions
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
     loss_fn_mean = get_loss(accelerator.device, "mean", **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
@@ -243,16 +248,10 @@ def trainer_ally(cfg: DictConfig) -> None:
         if rd != 1:
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
-                if rd == rd_offset + 1 or rd == 2 or cfg.strategy.write_to_hard_drive == False:
-                    embeddings = get_embedding(
-                        model=model, 
-                        swe_pooling=swe_pooling,
-                        dataloader=accelerator.prepare(get_emb_dataloader(dataset, collator, **cfg.strategy)), 
-                        device=accelerator.device,
-                        dtype=torch.float32 if cfg.strategy.write_to_hard_drive else dtype_pad_mask,
-                        save_dir=emb_save_dir,
-                        **cfg.strategy,
-                    )
+                if (rd == rd_offset + 1 and cfg.strategy.write_to_hard_drive == False) or rd == 2 or cfg.strategy.write_to_hard_drive == False:
+                    embeddings, id_to_loc = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                if cfg.strategy.write_to_hard_drive:
+                    embeddings = embedder._load_embeddings()
 
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
@@ -260,9 +259,9 @@ def trainer_ally(cfg: DictConfig) -> None:
                         rd=rd, 
                         lambdas=lambdas,
                         flag=flag,
-                        emb_dir=emb_save_dir,
                         embeddings=embeddings,
-                        save_dir=chk_dir, 
+                        save_dir=cfg.trainer.dir, 
+                        id_to_loc=id_to_loc,
                         **cfg.strategy,
                     ) # overwrite old lambdas with pred lambdas
 
@@ -273,7 +272,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     embeddings=embeddings, 
                     lambdas=lambdas, 
                     seed=cfg.seed,
-                    emb_dir=emb_save_dir,
                     dtype=dtype_pad_mask,
                     **cfg.strategy, 
                     **cfg.trainer.train,
@@ -290,7 +288,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     embeddings=embeddings, 
                     lambdas=lambdas, 
                     seed=cfg.seed,
-                    emb_dir=emb_save_dir,
                     dtype=dtype_pad_mask,
                     **cfg.strategy, 
                     **cfg.trainer.train,
@@ -302,7 +299,6 @@ def trainer_ally(cfg: DictConfig) -> None:
             dual_lr = cfg.strategy.dual_lr
             
         for global_id, x, y, pad_mask in dataloader:
-            # Keep the indices of traning samples
             global_id = np.array(global_id.cpu())
 
             # Increment the number of batches
@@ -323,8 +319,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                         out = model(x, pad_mask, output_hidden_states=True)
                         logits = out.logits
                         emb = out.hidden_states[-1]
-                        pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=torch.float32, **cfg.strategy)
-                        save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
+                        pooled_emb = embedder._pooling(emb=emb, pad_mask=pad_mask).to(torch.float32)
+                        embedder.update_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, id_to_loc=id_to_loc)
                     else:
                         out = model(x, pad_mask) 
                         logits = out.logits
@@ -395,8 +391,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     out = model(x, pad_mask, output_hidden_states=True)
                     logits = out.logits
                     emb = out.hidden_states[-1]
-                    pooled_emb = pooling(emb=emb, pad_mask=pad_mask, dtype=torch.float32, **cfg.strategy)
-                    save_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, emb_save_dir=emb_save_dir)
+                    pooled_emb = embedder._pooling(emb=emb, pad_mask=pad_mask).to(torch.float32)
+                    embedder.update_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, id_to_loc=id_to_loc)
                 else:
                     out = model(x, pad_mask) 
                     logits = out.logits
@@ -558,9 +554,6 @@ def trainer_ally(cfg: DictConfig) -> None:
             with open(os.path.join(summary_dir, "lambdas.json"), "w") as f:
                 json.dump(lambda_dict, f, indent=2)
 
-        # save SWE pooling
-        if cfg.strategy.pooling_method == "swe":
-            torch.save(swe_pooling.state_dict(), os.path.join(summary_dir, "swe.pt"))
 
     # Make sure that the wandb tracker finishes correctly and close the progress bar
     pbar.close()

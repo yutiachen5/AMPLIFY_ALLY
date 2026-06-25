@@ -2,9 +2,10 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..tokenizer import ProteinTokenizer
-from .datasets import InMemoryProteinDataset, SavedEmbDataset, InMemoryEmbDataset, ProteinGymDataset
+from .datasets import InMemoryProteinDataset, InMemoryEmbDataset, ProteinGymDataset
 from .data_collator import DataCollatorMLM, ProteinGymCollator
 
+import os
 import gc
 import math
 import random
@@ -144,63 +145,20 @@ def get_emb_dataloader(
         batch_size=per_device_batch_size_emb,
         shuffle=False,
         collate_fn=collator,
-        num_workers=2,
-        pin_memory=True,
-        prefetch_factor=2
+        num_workers=0,
     )
 
-def get_reg_dataloaders_from_saved_emb_set(
-    emb_dir: str,
-    lambdas: torch.Tensor,
-    flag: np.ndarray,
-    batch_size: int,
-    val_size: float = 0.2,
-    seed: int = 42,
-    num_workers: int = 0,
-    dtype: torch.dtype = torch.float32,
-    kmeans: bool = False,
-) -> Dict[str, DataLoader]:
-    """
-    Returns dict with keys: train, val, test.
-    Notes:
-      - persistent_workers only valid if num_workers > 0.
-      - prefetch_factor only valid if num_workers > 0.
-    """
-
-    loader_kwargs = dict(
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
-
-    if num_workers > 0:
-        loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 2
-
-    if kmeans:
-        kmeans_ds =  SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="kmeans")
-        return {"kmeans": DataLoader(kmeans_ds, **loader_kwargs)}
-    else:
-        train_ds = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="train")
-        val_ds   = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="val")
-        test_ds  = SavedEmbDataset(emb_dir=emb_dir, lambdas=lambdas, flag=flag, val_size=val_size, seed=seed, dtype=dtype, split="test")
-        return {
-            "train": DataLoader(train_ds, **loader_kwargs),
-            "val":   DataLoader(val_ds, **loader_kwargs),
-            "test":  DataLoader(test_ds, **loader_kwargs),
-        }
-
-def get_reg_dataloaders_from_in_memory_emb_set(
+def get_lambdanet_dataloaders(
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,
     flag: np.ndarray,
     device: torch.device,
     batch_size: int,
+    emb_save_dir: str,
     val_size: float = 0.2,
     seed: int = 42,
-    num_workers: int = 0
+    num_workers: int = 0,
+    dtype: torch.dtype = torch.float32,
 ) -> Dict[str, DataLoader]:
     mask = (flag >= 1)
     trained_emb = embeddings[mask]
@@ -255,7 +213,6 @@ def update_mlm_dataloader(
     collator: Callable,
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,
-    emb_dir: str,
     seed: int = 42,
     n_clusters: int = 512,
     per_device_batch_size_kmeans: int = 1024,
@@ -293,6 +250,7 @@ def update_mlm_dataloader(
             persistent_workers=False,
         )
 
+    # fit kmeans for clustering
     kmeans_mdl = MiniBatchKMeans(
         n_clusters=n_clusters, 
         random_state=seed, 
@@ -300,35 +258,12 @@ def update_mlm_dataloader(
         n_init='auto',
     )
 
-    if write_to_hard_drive:
-        loader = get_reg_dataloaders_from_saved_emb_set(
-            emb_dir=emb_dir,
-            lambdas=lambdas,
-            flag=np.zeros(len(lambdas)), # flag, val_size and seed do not matter here
-            val_size=0.0, 
-            seed=seed,
-            batch_size=per_device_batch_size_kmeans,
-            num_workers=num_workers,
-            kmeans=True,
-            dtype=dtype
-        )
+    clusters = []
+    X = embeddings.detach().to(torch.float32).cpu().numpy()
+    clusters = kmeans_mdl.fit_predict(X)
 
-        # fit Kmeans
-        for emb, _ in loader["kmeans"]:
-            kmeans_mdl.partial_fit(emb)
-
-        # prediction
-        clusters = []
-        for emb, _ in loader["kmeans"]:
-            clust_pred = kmeans_mdl.predict(emb)
-            clusters.extend(clust_pred)
-    else:
-        clusters = []
-        X = embeddings.detach().to(torch.float32).cpu().numpy()
-        clusters = kmeans_mdl.fit_predict(X)
-
-        del X, embeddings
-        gc.collect()
+    del X, embeddings
+    gc.collect()
     
     sorted_triplets = sorted(
         zip(clusters, lambdas.to(torch.float32).numpy(), range(len(clusters))),
@@ -350,7 +285,7 @@ def update_mlm_dataloader(
 
     for i in range(max_len):                
         for c in range(n_clusters):         
-            if i < len(cluster_to_samples[c]):   # skip if cluster is shorter
+            if i < len(cluster_to_samples[c]): # skip if cluster is shorter
                 l, idx = cluster_to_samples[c][i]
                 updated_idx_order.append(idx)
     updated_idx_order = np.array(updated_idx_order)
