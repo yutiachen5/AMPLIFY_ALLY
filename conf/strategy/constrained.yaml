@@ -10,7 +10,6 @@ alpha: 0.01
 slack_lr: 0.01
 n_clusters: 128
 n_steps: 8000
-swap: False
 
 # lambdanet training
 val_size: 0.2 
@@ -26,8 +25,6 @@ scale_lr_factor: 2
 
 # embedding pooling
 pooling_method: mean
-write_to_hard_drive: True
-shard_size: 1_000_000
 
 # save intermediate res for debugging
 save_intermediates: False

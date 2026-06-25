@@ -154,7 +154,6 @@ def get_lambdanet_dataloaders(
     flag: np.ndarray,
     device: torch.device,
     batch_size: int,
-    emb_save_dir: str,
     val_size: float = 0.2,
     seed: int = 42,
     num_workers: int = 0,

@@ -121,15 +121,13 @@ class LambdaNetTrainer:
         lambdas: torch.Tensor,
         flag: np.ndarray,
         save_dir: str,
-        embeddings: torch.Tensor | None = None,
-        id_to_loc: dict | None = None,
+        embeddings: torch.Tensor,
         val_size: float = 0.2,
         seed: int = 42,
         max_epochs: int = 100,
         print_every: int = 10,
         patience: int = 3,
         num_workers: int = 4,
-        write_to_hard_drive: bool = True,
         has_emb: bool = False,
         resume: bool = False,
         shard_size: int = 1_000_000,
@@ -160,7 +158,6 @@ class LambdaNetTrainer:
             val_size=val_size,
             seed=seed,
             num_workers=num_workers,
-            emb_save_dir=os.path.join(save_dir, "embeddings"),
             dtype=self.dtype,
         )
 
@@ -204,8 +201,7 @@ class LambdaNetTrainer:
 
         # Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
-        if not write_to_hard_drive:
-            pred_lambdas = pred_lambdas * scale + y_min
+        pred_lambdas = pred_lambdas * scale + y_min
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
