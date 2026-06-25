@@ -148,19 +148,8 @@ def get_emb_dataloader(
         num_workers=0,
     )
 
-def _load_embeddings(emb_save_dir: str, dtype: torch.dtype) -> torch.Tensor:
-    shards = []
-    shard_id = 0
-    while True:
-        emb_path = os.path.join(emb_save_dir, f"shard_{shard_id:04d}.npy")
-        if not os.path.exists(emb_path):
-            break
-        shards.append(torch.from_numpy(np.load(emb_path)))
-        shard_id += 1
-    return torch.cat(shards, dim=0).to(dtype=dtype)
-
 def get_lambdanet_dataloaders(
-    embeddings: torch.Tensor | None,
+    embeddings: torch.Tensor,
     lambdas: torch.Tensor,
     flag: np.ndarray,
     device: torch.device,
@@ -171,9 +160,6 @@ def get_lambdanet_dataloaders(
     num_workers: int = 0,
     dtype: torch.dtype = torch.float32,
 ) -> Dict[str, DataLoader]:
-    if embeddings is None:
-        embeddings = _load_embeddings(emb_save_dir, dtype) 
-
     mask = (flag >= 1)
     trained_emb = embeddings[mask]
     untrained_emb = embeddings[~mask]

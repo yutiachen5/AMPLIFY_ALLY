@@ -91,13 +91,13 @@ class Embedder:
 
     def update_embedding(
         self,
-        global_ids: list,
+        global_id: list,
         pooled_emb: torch.Tensor,
         id_to_loc: dict,
     ):
         """Write updated embeddings back into the correct shard positions."""
         shard_updates: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-        for i, gid in enumerate(global_ids):
+        for i, gid in enumerate(global_id):
             shard_id, local_id = id_to_loc[int(gid)]
             shard_updates[shard_id].append((local_id, gid, i))
 
@@ -158,3 +158,14 @@ class Embedder:
             ids_buf.clear()
             emb_buf.clear()
         return shard_id
+
+    def _load_embeddings(self) -> torch.Tensor:
+        shards = []
+        shard_id = 0
+        while True:
+            emb_path = os.path.join(self.save_dir, f"shard_{shard_id:04d}.npy")
+            if not os.path.exists(emb_path):
+                break
+            shards.append(torch.from_numpy(np.load(emb_path)))
+            shard_id += 1
+        return torch.cat(shards, dim=0).to(dtype=self.dtype)

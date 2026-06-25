@@ -248,8 +248,10 @@ def trainer_ally(cfg: DictConfig) -> None:
         if rd != 1:
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
-                if rd == rd_offset + 1 or rd == 2 or cfg.strategy.write_to_hard_drive == False:
-                    embeddings, id_to_loc = embedder.get_embedding(model=model, dataloader=emb_dataloader, )
+                if (rd == rd_offset + 1 and cfg.strategy.write_to_hard_drive == False) or rd == 2 or cfg.strategy.write_to_hard_drive == False:
+                    embeddings, id_to_loc = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                if cfg.strategy.write_to_hard_drive:
+                    embeddings = embedder._load_embeddings()
 
                 # Update lambda value for the next rd
                 lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
@@ -389,7 +391,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     out = model(x, pad_mask, output_hidden_states=True)
                     logits = out.logits
                     emb = out.hidden_states[-1]
-                    pooled_emb = embedder.pooling(emb=emb, pad_mask=pad_mask).to(torch.float32)
+                    pooled_emb = embedder._pooling(emb=emb, pad_mask=pad_mask).to(torch.float32)
                     embedder.update_embedding(global_id=torch.from_numpy(global_id), pooled_emb=pooled_emb, id_to_loc=id_to_loc)
                 else:
                     out = model(x, pad_mask) 
