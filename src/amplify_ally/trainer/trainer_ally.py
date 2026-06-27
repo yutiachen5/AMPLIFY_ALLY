@@ -92,9 +92,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Set the seed
     set_seed(cfg.seed)
 
-    # Scale steps down by number of GPUs: each step already sees n_gpu × per_device_batch_size samples
-    n_steps_eff = cfg.strategy.n_steps // accelerator.num_processes
-
     # Enable TF32 on matmul and on cuDNN
     torch.backends.cuda.matmul.allow_tf32 = bool(cfg.trainer.tf32)
     torch.backends.cudnn.allow_tf32 = bool(cfg.trainer.tf32)
@@ -233,7 +230,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         desc="Train",
         unit="step",
         initial=metrics["num_steps"],
-        total=n_steps_eff * cfg.strategy.max_rds,
+        total=cfg.strategy.n_steps * cfg.strategy.max_rds,
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
@@ -488,7 +485,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 optimizer.zero_grad()
 
                 # Save emb mdl and aux stuff from the main process
-                if metrics["num_steps"] % n_steps_eff == 0:
+                if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
                         save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
