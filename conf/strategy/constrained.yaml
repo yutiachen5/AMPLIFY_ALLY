@@ -6,8 +6,6 @@ epsilon: 2.25 # set epsilon to 1000 for unconstrained learning
 dual_lr: 0.1
 dual_lr_gamma: 0.9
 dual_lr_stepsize: 500
-alpha: 0.01
-slack_lr: 0.01
 n_clusters: 128
 n_steps: 8000
 

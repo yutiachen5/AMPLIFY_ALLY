@@ -31,7 +31,6 @@ def get_mlm_dataloader(
     return_labels: bool,
     num_workers: int,
     per_device_batch_size: int,
-    samples_before_next_set: list | None = None,
     mask_probability: int = 0,
     span_probability: float = 0.0,
     span_max: int = 0,
@@ -59,7 +58,6 @@ def get_mlm_dataloader(
         return_labels (bool): Return the protein labels.
         num_workers (int): Number of workers for the dataloader.
         per_device_batch_size (int): Batch size for each GPU.
-        samples_before_next_set (list | None, optional): Number of samples of each dataset to return before moving
         to the next dataset (interleaving). Defaults to ``None``.
         mask_probability (int, optional): Ratio of tokens that are masked. Defaults to 0.
         span_probability (float, optional): Probability for the span length. Defaults to 0.0.
