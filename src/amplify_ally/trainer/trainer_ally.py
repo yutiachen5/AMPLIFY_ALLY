@@ -198,7 +198,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         rd_path = os.path.join(cfg.trainer.dir, "rd_completed.txt")
         if os.path.exists(rd_path):
             rd_offset = int(open(rd_path).read().strip())
-            print(f"[resume] Resuming from round {rd_offset + 1}")
+            accelerator.print(f"[resume] Resuming from round {rd_offset + 1}")
 
         # Rebuild the dataloader using the idx order from previous checkpoint
         train_dataloader = DataLoader(
@@ -238,7 +238,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
 
     for rd in range(rd_offset + 1, cfg.strategy.max_rds + 1):
-        print(f"#### Round {rd} ####")
+        accelerator.print(f"#### Round {rd} ####")
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
         if rd != 1:

@@ -49,13 +49,14 @@ def get_wandb_run_id(dir: str, resume: bool, is_main_process: bool) -> str:
     if resume and os.path.exists(run_id_path):
         with open(run_id_path) as f:
             run_id = f.read().strip()
-        print(f"[wandb] Resuming run {run_id}")
+        if is_main_process:
+            print(f"[wandb] Resuming run {run_id}")
     else:
         run_id = wandb.util.generate_id()
         if is_main_process:
             os.makedirs(dir, exist_ok=True)
             with open(run_id_path, "w") as f:
                 f.write(run_id)
-        print(f"[wandb] New run {run_id}")
+            print(f"[wandb] New run {run_id}")
 
     return run_id
