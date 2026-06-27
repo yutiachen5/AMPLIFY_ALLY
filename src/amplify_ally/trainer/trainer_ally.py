@@ -214,14 +214,14 @@ def trainer_ally(cfg: DictConfig) -> None:
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
     loss_fn_mean = get_loss(accelerator.device, "mean", **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
 
-    # Save the model when receiving the signal SIGTERM
+    # Flag-based SIGTERM handler: set a flag and checkpoint at a safe point after the batch,
+    # so all ranks participate in the collective save_state together.
+    _sigterm_received = False
+
     def handler(signum, _):
-        print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
-        accelerator.save_state() # this will increment the it number
-        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order)
-        accelerator.wait_for_everyone()
-        print(f"Done on rank {accelerator.process_index}")
-        sys.exit(0)
+        nonlocal _sigterm_received
+        _sigterm_received = True
+        print(f"Signal {signum} received on rank {accelerator.process_index}, will checkpoint after current batch")
 
     signal.signal(signal.SIGTERM, handler)
 
@@ -397,7 +397,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 # Log metrics
                 pbar.update(1)
-                metrics["num_steps"] += 1 # number of gradient updates
+                metrics["num_steps"] += 1
                 metrics["num_batches_in_epoch"] += 1
                 metrics["local_num_samples"] += x.shape[0]
                 metrics["local_num_tokens"] += (pad_mask == 0).sum().item()
@@ -483,6 +483,16 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 # Reset the gradient
                 optimizer.zero_grad()
+
+                # Checkpoint on SIGTERM: all ranks are at a safe point (no collective in flight)
+                if _sigterm_received:
+                    print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
+                    accelerator.save_state()
+                    if accelerator.is_main_process:
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
+                    accelerator.wait_for_everyone()
+                    print(f"Done on rank {accelerator.process_index}")
+                    sys.exit(0)
 
                 # Save emb mdl and aux stuff from the main process
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
