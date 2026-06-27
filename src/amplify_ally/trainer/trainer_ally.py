@@ -13,16 +13,17 @@ from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from accelerate import Accelerator, skip_first_batches
-from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
+from accelerate.utils import DistributedType, ProjectConfiguration, set_seed, broadcast_object_list
 from deepspeed.utils import safe_get_full_fp32_param
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
 from ..metric import Metrics
 from ..loss import get_loss, get_lagrangian, update_dual_variables
-from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader, get_proteingym_dataloader
+from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
@@ -244,28 +245,59 @@ def trainer_ally(cfg: DictConfig) -> None:
         if rd != 1:
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
-                embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader, accelerator=accelerator)
 
-                # Update lambda value for the next rd
-                lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
-                lambdas, best_reg = lambdanet_trainer.get_lambdas(
-                        rd=rd, 
+                # Sync lambdas/slacks/flag across GPUs before single-process work.
+                # Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
+                if accelerator.num_processes > 1:
+                    lambdas_g = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).to(accelerator.device)
+                    slacks_g = (slacks if torch.is_tensor(slacks) else torch.as_tensor(slacks)).to(accelerator.device)
+                    flag_g = torch.as_tensor(flag, dtype=torch.float32).to(accelerator.device)
+                    dist.all_reduce(lambdas_g, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(slacks_g, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(flag_g, op=dist.ReduceOp.SUM)
+                    lambdas = lambdas_g.cpu()
+                    slacks = slacks_g.cpu()
+                    flag = flag_g.cpu().numpy()
+
+                # LambdaNet training runs on main process only (small network, full embeddings needed)
+                if accelerator.is_main_process:
+                    lambdas, best_reg = lambdanet_trainer.get_lambdas(
+                        rd=rd,
                         lambdas=lambdas,
                         flag=flag,
                         embeddings=embeddings,
-                        save_dir=cfg.trainer.dir, 
+                        save_dir=cfg.trainer.dir,
                         **cfg.strategy,
-                    ) # overwrite old lambdas with pred lambdas
+                    )
+                else:
+                    lambdas, best_reg = None, None
 
-                # Update dataloder based on actual and predicted lambda
+                # Broadcast updated lambdas and best_reg to all processes
+                payload = [lambdas, best_reg]
+                broadcast_object_list(payload, from_process=0)
+                lambdas, best_reg = payload
+
+                # Clustering runs on main process only, then idx_order is broadcast
+                if accelerator.is_main_process:
+                    idx_order = compute_sample_order(
+                        embeddings=embeddings,
+                        lambdas=lambdas,
+                        seed=cfg.seed,
+                        **cfg.strategy,
+                    )
+                else:
+                    idx_order = None
+
+                idx_order_list = [idx_order]
+                broadcast_object_list(idx_order_list, from_process=0)
+                idx_order = idx_order_list[0]
+
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
                     collator=collator,
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    seed=cfg.seed,
-                    dtype=dtype_pad_mask,
-                    **cfg.strategy, 
+                    idx_order=idx_order,
+                    **cfg.strategy,
                     **cfg.trainer.train,
                 )
 
@@ -273,15 +305,26 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
-                embeddings = torch.zeros(len(dataset))
+                # Unconstrained: compute order on main process, broadcast
+                if accelerator.is_main_process:
+                    idx_order = compute_sample_order(
+                        embeddings=torch.zeros(len(dataset)),
+                        lambdas=lambdas,
+                        seed=cfg.seed,
+                        **cfg.strategy,
+                    )
+                else:
+                    idx_order = None
+
+                idx_order_list = [idx_order]
+                broadcast_object_list(idx_order_list, from_process=0)
+                idx_order = idx_order_list[0]
+
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
                     collator=collator,
-                    embeddings=embeddings, 
-                    lambdas=lambdas, 
-                    seed=cfg.seed,
-                    dtype=dtype_pad_mask,
-                    **cfg.strategy, 
+                    idx_order=idx_order,
+                    **cfg.strategy,
                     **cfg.trainer.train,
                 )
 

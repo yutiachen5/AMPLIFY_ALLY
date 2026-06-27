@@ -207,68 +207,41 @@ def get_lambdanet_dataloaders(
     }
 
     
-def update_mlm_dataloader(
-    dataset: torch.utils.data.Dataset,
-    collator: Callable,
+def compute_sample_order(
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,
     seed: int = 42,
     n_clusters: int = 512,
     per_device_batch_size_kmeans: int = 1024,
-    per_device_batch_size: int = 1024,
-    num_workers: int = 2,
     epsilon: int = 2,
-    write_to_hard_drive: bool = True,
-    dtype: torch.dtype = torch.float32,
     **kwargs,
-) -> DataLoader:
-    """Update the order of samples in the dataloader according to informativeness and diversity
+) -> np.ndarray:
+    """Compute the index ordering for the next round (clustering + lambda sort).
+    Must run on a single process only.
 
-    Args:
-        embeddings (torch.Tensor). Sequence-level representation.
-        lambdas (torch.Tensor). Informativeness of each sequence.
-        n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
-        seed (int): Random seed. Defaults to 0.
-        per_device_batch_size_kmeans (int): Batch size for each GPU when doing clustering.
-        
     Returns:
-        torch.utils.data.DataLoader
+        np.ndarray of sample indices in the new training order.
     """
-    # shuffle the index list for unconstrained learning, the lambda values do not matter since they are all zeros.
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        updated_idx_order = np.random.permutation(np.arange(len(lambdas)))
-        return updated_idx_order, DataLoader(
-            dataset=dataset.update(updated_idx_order),
-            batch_size=per_device_batch_size,
-            shuffle=False,
-            collate_fn=collator,
-            num_workers=num_workers,
-            prefetch_factor=2,
-            pin_memory=True,
-            persistent_workers=False,
-        )
+        return np.random.permutation(np.arange(len(lambdas)))
 
-    # fit kmeans for clustering
     kmeans_mdl = MiniBatchKMeans(
-        n_clusters=n_clusters, 
-        random_state=seed, 
-        batch_size=per_device_batch_size_kmeans, 
+        n_clusters=n_clusters,
+        random_state=seed,
+        batch_size=per_device_batch_size_kmeans,
         n_init='auto',
     )
 
-    clusters = []
     X = embeddings.detach().to(torch.float32).cpu().numpy()
     clusters = kmeans_mdl.fit_predict(X)
-
     del X, embeddings
     gc.collect()
-    
+
     sorted_triplets = sorted(
         zip(clusters, lambdas.to(torch.float32).numpy(), range(len(clusters))),
-        key=lambda t: (t[0], -t[1])   
+        key=lambda t: (t[0], -t[1])
     )
-
     sorted_clusters, sorted_lambdas, sorted_idxs = zip(*sorted_triplets)
     del clusters, sorted_triplets
     gc.collect()
@@ -281,19 +254,33 @@ def update_mlm_dataloader(
 
     updated_idx_order = []
     max_len = max(len(v) for v in cluster_to_samples.values())
-
-    for i in range(max_len):                
-        for c in range(n_clusters):         
-            if i < len(cluster_to_samples[c]): # skip if cluster is shorter
-                l, idx = cluster_to_samples[c][i]
+    for i in range(max_len):
+        for c in range(n_clusters):
+            if i < len(cluster_to_samples[c]):
+                _, idx = cluster_to_samples[c][i]
                 updated_idx_order.append(idx)
     updated_idx_order = np.array(updated_idx_order)
-    
     del cluster_to_samples
     gc.collect()
-    
-    return updated_idx_order, DataLoader(
-        dataset=dataset.update(updated_idx_order),
+
+    return updated_idx_order
+
+
+def update_mlm_dataloader(
+    dataset: torch.utils.data.Dataset,
+    collator: Callable,
+    idx_order: np.ndarray,
+    per_device_batch_size: int = 1024,
+    num_workers: int = 2,
+    **kwargs,
+) -> DataLoader:
+    """Build a DataLoader from a pre-computed index ordering.
+
+    Returns:
+        (idx_order, torch.utils.data.DataLoader)
+    """
+    return idx_order, DataLoader(
+        dataset=dataset.update(idx_order),
         batch_size=per_device_batch_size,
         shuffle=False,
         collate_fn=collator,
