@@ -5,17 +5,14 @@ import sys
 import json
 import signal
 import shutil
-import datetime 
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
-from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
-from accelerate import Accelerator, skip_first_batches
+from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed, broadcast_object_list
 from deepspeed.utils import safe_get_full_fp32_param
 
@@ -158,8 +155,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize parameters for constrained learning
     rd_offset = 0
-    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
-    slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
+    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
@@ -195,7 +191,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Resume block
     if cfg.trainer.resume and it > 0:
         accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, slacks, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
+        lambdas, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
         rd_path = os.path.join(cfg.trainer.dir, "rd_completed.txt")
         if os.path.exists(rd_path):
             rd_offset = int(open(rd_path).read().strip())
@@ -219,10 +215,10 @@ def trainer_ally(cfg: DictConfig) -> None:
     loss_fn_mean = get_loss(accelerator.device, "mean", **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
 
     # Save the model when receiving the signal SIGTERM
-    def handler(signum, frame):
+    def handler(signum, _):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
         accelerator.save_state() # this will increment the it number
-        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order)
+        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order)
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -251,13 +247,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
                 if accelerator.num_processes > 1:
                     lambdas_g = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).to(accelerator.device)
-                    slacks_g = (slacks if torch.is_tensor(slacks) else torch.as_tensor(slacks)).to(accelerator.device)
                     flag_g = torch.as_tensor(flag, dtype=torch.float32).to(accelerator.device)
                     dist.all_reduce(lambdas_g, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(slacks_g, op=dist.ReduceOp.SUM)
                     dist.all_reduce(flag_g, op=dist.ReduceOp.SUM)
                     lambdas = lambdas_g.cpu()
-                    slacks = slacks_g.cpu()
                     flag = flag_g.cpu().numpy()
 
                 # LambdaNet training runs on main process only (small network, full embeddings needed)
@@ -271,12 +264,13 @@ def trainer_ally(cfg: DictConfig) -> None:
                         **cfg.strategy,
                     )
                 else:
-                    lambdas, best_reg = None, None
+                    lambdas = None
+                    best_reg = None
 
-                # Broadcast updated lambdas and best_reg to all processes
-                payload = [lambdas, best_reg]
-                broadcast_object_list(payload, from_process=0)
-                lambdas, best_reg = payload
+                # Broadcast lambdas only; best_reg stays on main process for checkpointing
+                lambdas_list = [lambdas]
+                broadcast_object_list(lambdas_list, from_process=0)
+                lambdas = lambdas_list[0]
 
                 # Clustering runs on main process only, then idx_order is broadcast
                 if accelerator.is_main_process:
@@ -341,7 +335,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             # Extract the lambda for the current batch
             lambdas_current = lambdas[global_id]
-            slacks_current = slacks[global_id]
 
             # Keep recored the number of times each sample was seen by the model
             flag[global_id] += 1
@@ -370,31 +363,26 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                     # Compute gradient and update dual variables
-                    lambdas_updated, slacks_updated = update_dual_variables(
+                    lambdas_updated = update_dual_variables(
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
-                        slacks_current=slacks_current,
                         lr_dual=dual_lr,
                         dtype=dtype_reg_head,
-                        **cfg.strategy, 
+                        **cfg.strategy,
                     )
 
                     lagrangian, constraint_violations = get_lagrangian(
-                        device=accelerator.device, 
-                        train_loss_seq=train_loss_seq, 
-                        lambdas_current=lambdas_current, 
-                        slacks_current=slacks_current, 
-                        lr_dual=dual_lr, 
+                        device=accelerator.device,
+                        train_loss_seq=train_loss_seq,
+                        lambdas_current=lambdas_current,
+                        lr_dual=dual_lr,
                         **cfg.strategy
                     )
                     accelerator.backward(lagrangian)
 
-
                     lambdas[global_id] = lambdas_updated.detach().cpu()
-                    slacks[global_id] = slacks_updated.detach().cpu() 
 
-                    metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
-                    metrics["slack_mean"] = slacks[flag >= 1].mean().item()
+                    metrics["lambda_mean"] = lambdas[flag >= 1].mean().item()
                     metrics["constraint_violations"] = constraint_violations
             else:
                 out = model(x, pad_mask) 
@@ -418,30 +406,26 @@ def trainer_ally(cfg: DictConfig) -> None:
                 metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                 # Compute gradient and update dual variables
-                lambdas_updated, slacks_updated = update_dual_variables(
+                lambdas_updated = update_dual_variables(
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
-                    slacks_current=slacks_current,
                     lr_dual=dual_lr,
                     dtype=dtype_reg_head,
-                    **cfg.strategy, 
+                    **cfg.strategy,
                 )
 
                 lagrangian, constraint_violations = get_lagrangian(
-                    device=accelerator.device, 
-                    train_loss_seq=train_loss_seq, 
-                    lambdas_current=lambdas_current, 
-                    slacks_current=slacks_current, 
-                    lr_dual=dual_lr, 
+                    device=accelerator.device,
+                    train_loss_seq=train_loss_seq,
+                    lambdas_current=lambdas_current,
+                    lr_dual=dual_lr,
                     **cfg.strategy
                 )
                 accelerator.backward(lagrangian)
 
                 lambdas[global_id] = lambdas_updated.detach().cpu()
-                slacks[global_id] = slacks_updated.detach().cpu() 
 
-                metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
-                metrics["slack_mean"] = slacks[flag >= 1].mean().item()
+                metrics["lambda_mean"] = lambdas[flag >= 1].mean().item()
                 metrics["constraint_violations"] = constraint_violations
 
                 # Evaluate the model
@@ -504,7 +488,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
                         with open(os.path.join(cfg.trainer.dir, "rd_completed.txt"), "w") as f:
                             f.write(str(rd))
                     break
