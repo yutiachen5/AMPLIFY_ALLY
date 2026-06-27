@@ -444,7 +444,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.trainer.pg_eval_steps == 0:
                     if accelerator.is_main_process:
                         proteingym_scc = evaluate_proteingym(
-                            model=model,
+                            model=accelerator.unwrap_model(model),
                             dataloader=pg_dataloader,
                             dataset=pg_dataset,
                             device=accelerator.device,
@@ -452,6 +452,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                             dtype=dtype_pad_mask,
                         )
                         metrics["proteingym_scc"] = proteingym_scc
+                    accelerator.wait_for_everyone()
 
                 # Log metrics
                 if metrics["num_steps"] % cfg.wandb.log_interval == 0:

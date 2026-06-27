@@ -68,8 +68,7 @@ def evaluate_proteingym(
             mutants = batch["mutants"] # list[list]
  
             pad_mask = torch.where(masked_ids == pad_token_id, float("-inf"), float(0.0)).to(dtype=dtype)
-            logits = model(masked_ids, pad_mask).logits
-            logits = model(masked_ids).logits # (B, L, vocab)
+            logits = model(masked_ids, pad_mask).logits # (B, L, vocab)
             log_probs = torch.log_softmax(logits, dim=-1) # (B, L, vocab)
  
             for j in range(len(dms_idx)):
