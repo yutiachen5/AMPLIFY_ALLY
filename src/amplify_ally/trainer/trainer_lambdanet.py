@@ -3,6 +3,7 @@ import numpy as np
 from accelerate import Accelerator
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -134,6 +135,22 @@ class LambdaNetTrainer:
         **kwargs,
     ) -> torch.Tensor:
 
+        use_dist = self.accelerator.num_processes > 1
+
+        if not self.accelerator.is_main_process:
+            # Non-main ranks: heartbeat loop so NCCL stays alive while rank 0 trains.
+            # One dist.all_reduce per epoch mirrors rank 0's signal; exit when rank 0
+            # sets the stop flag to 1 (training complete or early-stopped).
+            if use_dist:
+                for _ in range(max_epochs):
+                    stop = torch.zeros(1, dtype=torch.int32, device=self.device)
+                    dist.all_reduce(stop, op=dist.ReduceOp.MAX)
+                    if stop.item() == 1:
+                        break
+            return None, None
+
+        # ---- Main process: actual LambdaNet training ----
+
         def reset_weights(m):
             if hasattr(m, 'reset_parameters'):
                 m.reset_parameters()
@@ -147,7 +164,7 @@ class LambdaNetTrainer:
         else:
             print("reset weights of lambdanet")
             self.model.apply(reset_weights)
-        
+
         # Build dataloaders for lambdanet
         scale, y_min, loaders = get_lambdanet_dataloaders(
             embeddings=embeddings,
@@ -189,6 +206,12 @@ class LambdaNetTrainer:
                     f"grad_norm: {grad_norm:.4f} | weight_norm: {weight_norm:.4f}",
                     flush=True,
                 )
+
+            # Signal to non-main ranks: 0 = keep waiting, 1 = training done.
+            is_done = (n_no_improve >= patience) or (epoch == max_epochs - 1)
+            if use_dist:
+                stop = torch.tensor([1 if is_done else 0], dtype=torch.int32, device=self.device)
+                dist.all_reduce(stop, op=dist.ReduceOp.MAX)
 
             if n_no_improve >= patience:
                 print(f"Early stopping at epoch {epoch} (no val improvement for {patience} epochs).")

@@ -13,7 +13,8 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
-from accelerate.utils import DistributedType, ProjectConfiguration, set_seed, broadcast_object_list
+from accelerate.utils import DistributedType, InitProcessGroupKwargs, ProjectConfiguration, set_seed, broadcast_object_list
+from datetime import timedelta
 from deepspeed.utils import safe_get_full_fp32_param
 
 from ..config import config_schema, ConfigError
@@ -60,7 +61,11 @@ def trainer_ally(cfg: DictConfig) -> None:
         total_limit=cfg.trainer.max_checkpoints,
         iteration=it + 1,
     )
+    # Large timeout covers single-process ops (K-means, etc.) where one rank
+    # computes while the other waits at broadcast_object_list.
+    pg_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=4))
     accelerator = Accelerator(
+        kwargs_handlers=[pg_kwargs],
         step_scheduler_with_optimizer=False,
         gradient_accumulation_steps=cfg.trainer.gradient_accumulation_steps,
         log_with="wandb",
@@ -253,21 +258,18 @@ def trainer_ally(cfg: DictConfig) -> None:
                     lambdas = lambdas_g.cpu()
                     flag = flag_g.cpu().numpy()
 
-                # LambdaNet training runs on main process only (small network, full embeddings needed)
-                if accelerator.is_main_process:
-                    lambdas, best_reg = lambdanet_trainer.get_lambdas(
-                        rd=rd,
-                        lambdas=lambdas,
-                        flag=flag,
-                        embeddings=embeddings,
-                        save_dir=cfg.trainer.dir,
-                        **cfg.strategy,
-                    )
-                else:
-                    lambdas = None
-                    best_reg = None
+                # All ranks enter get_lambdas: rank 0 trains, non-main ranks run a
+                # per-epoch dist.all_reduce heartbeat so NCCL doesn't time out waiting.
+                lambdas, best_reg = lambdanet_trainer.get_lambdas(
+                    rd=rd,
+                    lambdas=lambdas,
+                    flag=flag,
+                    embeddings=embeddings,
+                    save_dir=cfg.trainer.dir,
+                    **cfg.strategy,
+                )
 
-                # Broadcast lambdas only; best_reg stays on main process for checkpointing
+                # Use rank 0's result as canonical; discard rank 1's.
                 lambdas_list = [lambdas]
                 broadcast_object_list(lambdas_list, from_process=0)
                 lambdas = lambdas_list[0]
