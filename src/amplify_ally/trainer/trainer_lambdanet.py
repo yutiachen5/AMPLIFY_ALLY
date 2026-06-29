@@ -3,7 +3,6 @@ import numpy as np
 from accelerate import Accelerator
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -16,6 +15,10 @@ class LambdaNetTrainer:
     Trainer class for the LambdaNet model.
     Instantiate once before the pretraining loop; call `get_lambdas()` each round.
     Model state is kept in memory and reused across rounds.
+
+    Both ranks run LambdaNet training independently (same data + same seed →
+    deterministic, identical results).  The caller broadcasts rank 0's output as
+    canonical so any tiny floating-point divergence is harmless.
     """
 
     def __init__(
@@ -63,7 +66,7 @@ class LambdaNetTrainer:
         scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd-2)), max_lr) # rd starts from 2
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
-        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
+        self.accelerator.print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
@@ -134,22 +137,9 @@ class LambdaNetTrainer:
         shard_size: int = 1_000_000,
         **kwargs,
     ) -> torch.Tensor:
-
-        use_dist = self.accelerator.num_processes > 1
-
-        if not self.accelerator.is_main_process:
-            # Non-main ranks: heartbeat loop so NCCL stays alive while rank 0 trains.
-            # One dist.all_reduce per epoch mirrors rank 0's signal; exit when rank 0
-            # sets the stop flag to 1 (training complete or early-stopped).
-            if use_dist:
-                for _ in range(max_epochs):
-                    stop = torch.zeros(1, dtype=torch.int32, device=self.device)
-                    dist.all_reduce(stop, op=dist.ReduceOp.MAX)
-                    if stop.item() == 1:
-                        break
-            return None, None
-
-        # ---- Main process: actual LambdaNet training ----
+        """Train LambdaNet on every rank (same data + seed → identical result).
+        Caller broadcasts rank 0's output as canonical.
+        """
 
         def reset_weights(m):
             if hasattr(m, 'reset_parameters'):
@@ -159,10 +149,10 @@ class LambdaNetTrainer:
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
         if resume:
             reg_path = os.path.join(save_dir, "checkpoints", f"checkpoint_{rd-1}", "lambdanet.pt")
-            print(f"loading lambdanet from: {reg_path}")
+            self.accelerator.print(f"loading lambdanet from: {reg_path}")
             self.model.load_state_dict(torch.load(reg_path, map_location=self.device))
         else:
-            print("reset weights of lambdanet")
+            self.accelerator.print("reset weights of lambdanet")
             self.model.apply(reset_weights)
 
         # Build dataloaders for lambdanet
@@ -200,25 +190,18 @@ class LambdaNetTrainer:
                 n_no_improve += 1
 
             if epoch % print_every == 0:
-                print(
+                self.accelerator.print(
                     f"[Round {rd} | Epoch {epoch:03d}] "
                     f"Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f} | "
                     f"grad_norm: {grad_norm:.4f} | weight_norm: {weight_norm:.4f}",
-                    flush=True,
                 )
 
-            # Signal to non-main ranks: 0 = keep waiting, 1 = training done.
-            is_done = (n_no_improve >= patience) or (epoch == max_epochs - 1)
-            if use_dist:
-                stop = torch.tensor([1 if is_done else 0], dtype=torch.int32, device=self.device)
-                dist.all_reduce(stop, op=dist.ReduceOp.MAX)
-
             if n_no_improve >= patience:
-                print(f"Early stopping at epoch {epoch} (no val improvement for {patience} epochs).")
+                self.accelerator.print(f"Early stopping at epoch {epoch} (no val improvement for {patience} epochs).")
                 break
 
         if best_state is None:
-            print("Warning: Validation did not improve — keeping the last model.")
+            self.accelerator.print("Warning: Validation did not improve — keeping the last model.")
         else:
             self.model.load_state_dict(best_state)
 
@@ -228,11 +211,6 @@ class LambdaNetTrainer:
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
-
-        # # Save the regression head, mkdir since this happens at the begining of each rd
-        # save_path = os.path.join(save_dir, f"checkpoint_{rd}")
-        # os.makedirs(save_path, exist_ok=True)
-        # torch.save(best_state, os.path.join(save_path, "lambdanet.pt"))
 
         # Free per-round data
         self.lambdas = None

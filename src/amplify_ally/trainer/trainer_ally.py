@@ -258,8 +258,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     lambdas = lambdas_g.cpu()
                     flag = flag_g.cpu().numpy()
 
-                # All ranks enter get_lambdas: rank 0 trains, non-main ranks run a
-                # per-epoch dist.all_reduce heartbeat so NCCL doesn't time out waiting.
+                # All ranks train LambdaNet (same data + seed → identical result).
+                # Rank 0's output is used as canonical via broadcast below.
                 lambdas, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
                     lambdas=lambdas,
@@ -274,16 +274,14 @@ def trainer_ally(cfg: DictConfig) -> None:
                 broadcast_object_list(lambdas_list, from_process=0)
                 lambdas = lambdas_list[0]
 
-                # Clustering runs on main process only, then idx_order is broadcast
-                if accelerator.is_main_process:
-                    idx_order = compute_sample_order(
-                        embeddings=embeddings,
-                        lambdas=lambdas,
-                        seed=cfg.seed,
-                        **cfg.strategy,
-                    )
-                else:
-                    idx_order = None
+                # Both ranks compute idx_order (same data + seed → identical result).
+                # Broadcast rank 0's output as canonical to cover any fp divergence.
+                idx_order = compute_sample_order(
+                    embeddings=embeddings,
+                    lambdas=lambdas,
+                    seed=cfg.seed,
+                    **cfg.strategy,
+                )
 
                 idx_order_list = [idx_order]
                 broadcast_object_list(idx_order_list, from_process=0)
@@ -301,16 +299,13 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
-                # Unconstrained: compute order on main process, broadcast
-                if accelerator.is_main_process:
-                    idx_order = compute_sample_order(
-                        embeddings=torch.zeros(len(dataset)),
-                        lambdas=lambdas,
-                        seed=cfg.seed,
-                        **cfg.strategy,
-                    )
-                else:
-                    idx_order = None
+                # Unconstrained: both ranks compute, broadcast rank 0's result as canonical.
+                idx_order = compute_sample_order(
+                    embeddings=torch.zeros(len(dataset)),
+                    lambdas=lambdas,
+                    seed=cfg.seed,
+                    **cfg.strategy,
+                )
 
                 idx_order_list = [idx_order]
                 broadcast_object_list(idx_order_list, from_process=0)
