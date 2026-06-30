@@ -13,7 +13,7 @@ import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.preprocessing import MinMaxScaler
 
-from typing import List, Callable, Dict
+from typing import Callable, Dict, Optional
 from collections import defaultdict
 
 
@@ -212,23 +212,27 @@ def compute_sample_order(
     n_clusters: int = 512,
     per_device_batch_size_kmeans: int = 1024,
     epsilon: int = 2,
+    kmeans_warm_start: bool = False,
+    init_centroids: Optional[np.ndarray] = None,
     **kwargs,
-) -> np.ndarray:
+) -> tuple:
     """Compute the index ordering for the next round (clustering + lambda sort).
     Must run on a single process only.
 
     Returns:
-        np.ndarray of sample indices in the new training order.
+        (np.ndarray of sample indices, cluster_centers or None)
     """
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        return np.random.permutation(np.arange(len(lambdas)))
+        return np.random.permutation(np.arange(len(lambdas))), None
 
+    use_warm_init = kmeans_warm_start and init_centroids is not None
     kmeans_mdl = MiniBatchKMeans(
         n_clusters=n_clusters,
         random_state=seed,
         batch_size=per_device_batch_size_kmeans,
-        n_init='auto',
+        n_init=1 if use_warm_init else 'auto',
+        init=init_centroids if use_warm_init else 'k-means++',
     )
 
     X = embeddings.detach().to(torch.float32).cpu().numpy()
@@ -258,10 +262,11 @@ def compute_sample_order(
                 _, idx = cluster_to_samples[c][i]
                 updated_idx_order.append(idx)
     updated_idx_order = np.array(updated_idx_order)
+    cluster_centers = kmeans_mdl.cluster_centers_.copy()
     del cluster_to_samples
     gc.collect()
 
-    return updated_idx_order
+    return updated_idx_order, cluster_centers
 
 
 def update_mlm_dataloader(

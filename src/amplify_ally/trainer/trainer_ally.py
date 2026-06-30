@@ -164,6 +164,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
+    centroid = None  # warm-start K-means: carries fitted centroids across rounds
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -276,10 +277,11 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 # Both ranks compute idx_order (same data + seed → identical result).
                 # Broadcast rank 0's output as canonical to cover any fp divergence.
-                idx_order = compute_sample_order(
+                idx_order, centroid = compute_sample_order(
                     embeddings=embeddings,
                     lambdas=lambdas,
                     seed=cfg.seed,
+                    init_centroids=centroid,
                     **cfg.strategy,
                 )
 
@@ -300,7 +302,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     torch.cuda.empty_cache()
             else:
                 # Unconstrained: both ranks compute, broadcast rank 0's result as canonical.
-                idx_order = compute_sample_order(
+                idx_order, _ = compute_sample_order(
                     embeddings=torch.zeros(len(dataset)),
                     lambdas=lambdas,
                     seed=cfg.seed,

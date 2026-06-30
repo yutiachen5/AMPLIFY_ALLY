@@ -131,8 +131,6 @@ class LambdaNetTrainer:
         print_every: int = 10,
         patience: int = 3,
         num_workers: int = 4,
-        resume: bool = False,
-        shard_size: int = 1_000_000,
         **kwargs,
     ) -> torch.Tensor:
         """Train LambdaNet on every rank (same data + seed → identical result).
@@ -145,9 +143,6 @@ class LambdaNetTrainer:
 
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
-        if resume == False:
-            self.accelerator.print("reset weights of lambdanet")
-            self.model.apply(reset_weights)
 
         # Build dataloaders for lambdanet
         scale, y_min, loaders = get_lambdanet_dataloaders(
