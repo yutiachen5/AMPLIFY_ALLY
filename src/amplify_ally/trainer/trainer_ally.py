@@ -249,8 +249,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
                 embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader, accelerator=accelerator)
 
-                # Sync lambdas/slacks/flag across GPUs before single-process work.
-                # Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
+                # Sync lambdas/slacks/flag across GPUs before single-process work. Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
                 if accelerator.num_processes > 1:
                     lambdas_g = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).to(accelerator.device)
                     flag_g = torch.as_tensor(flag, dtype=torch.float32).to(accelerator.device)
@@ -259,8 +258,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     lambdas = lambdas_g.cpu()
                     flag = flag_g.cpu().numpy()
 
-                # All ranks train LambdaNet (same data + seed → identical result).
-                # Rank 0's output is used as canonical via broadcast below.
+                # All ranks train LambdaNet (same data + seed → identical result). Rank 0's output is used as canonical via broadcast below.
                 lambdas, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
                     lambdas=lambdas,
@@ -275,8 +273,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 broadcast_object_list(lambdas_list, from_process=0)
                 lambdas = lambdas_list[0]
 
-                # Both ranks compute idx_order (same data + seed → identical result).
-                # Broadcast rank 0's output as canonical to cover any fp divergence.
                 idx_order, centroid = compute_sample_order(
                     embeddings=embeddings,
                     lambdas=lambdas,
@@ -484,7 +480,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # Reset the gradient
                 optimizer.zero_grad()
 
-                # Checkpoint on SIGTERM: all ranks are at a safe point (no collective in flight)
+                # Save emb mdl and aux stuff when receive the signal
                 if _sigterm_received:
                     print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
                     accelerator.save_state()
@@ -494,7 +490,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     print(f"Done on rank {accelerator.process_index}")
                     sys.exit(0)
 
-                # Save emb mdl and aux stuff from the main process
+                # Save emb mdl and aux stuff from the main process in every rd
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:

@@ -40,7 +40,7 @@ class LambdaNetTrainer:
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
 
-        self.model = model
+        self.model = model # resume on model in prev rd as it always sits in mem
         self.optimizer = optimizer
         self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
         self.base_lr = optimizer.param_groups[0]["lr"]
@@ -136,11 +136,6 @@ class LambdaNetTrainer:
         """Train LambdaNet on every rank (same data + seed → identical result).
         Caller broadcasts rank 0's output as canonical.
         """
-
-        def reset_weights(m):
-            if hasattr(m, 'reset_parameters'):
-                m.reset_parameters()
-
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
 

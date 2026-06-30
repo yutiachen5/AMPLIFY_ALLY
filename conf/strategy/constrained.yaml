@@ -6,7 +6,6 @@ epsilon: 2.25 # set epsilon to 1000 for unconstrained learning
 dual_lr: 0.1
 dual_lr_gamma: 0.9
 dual_lr_stepsize: 500
-n_clusters: 128
 n_steps: 8000
 
 # lambdanet training
@@ -22,7 +21,7 @@ scale_lr_factor: 1
 
 # embedding pooling
 pooling_method: mean
-kmeans_warm_start: False
 
-# save intermediate res for debugging
-save_intermediates: False
+# kmeans
+n_clusters: 128
+kmeans_warm_start: False
