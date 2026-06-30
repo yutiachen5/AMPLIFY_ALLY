@@ -197,7 +197,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Resume block
     if cfg.trainer.resume and it > 0:
         accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
+        lambdas, flag, idx_order, centroid = load_aux_state(chk_dir, it, dtype_pad_mask)
         rd_path = os.path.join(cfg.trainer.dir, "rd_completed.txt")
         if os.path.exists(rd_path):
             rd_offset = int(open(rd_path).read().strip())
@@ -485,7 +485,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid)
                     accelerator.wait_for_everyone()
                     print(f"Done on rank {accelerator.process_index}")
                     sys.exit(0)
@@ -494,7 +494,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid)
                         with open(os.path.join(cfg.trainer.dir, "rd_completed.txt"), "w") as f:
                             f.write(str(rd))
                     break
