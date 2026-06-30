@@ -124,7 +124,6 @@ class LambdaNetTrainer:
         rd: int,
         lambdas: torch.Tensor,
         flag: np.ndarray,
-        save_dir: str,
         embeddings: torch.Tensor,
         val_size: float = 0.2,
         seed: int = 42,
@@ -132,7 +131,6 @@ class LambdaNetTrainer:
         print_every: int = 10,
         patience: int = 3,
         num_workers: int = 4,
-        has_emb: bool = False,
         resume: bool = False,
         shard_size: int = 1_000_000,
         **kwargs,
@@ -147,11 +145,7 @@ class LambdaNetTrainer:
 
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
-        if resume:
-            reg_path = os.path.join(save_dir, "checkpoints", f"checkpoint_{rd-1}", "lambdanet.pt")
-            self.accelerator.print(f"loading lambdanet from: {reg_path}")
-            self.model.load_state_dict(torch.load(reg_path, map_location=self.device))
-        else:
+        if resume == False:
             self.accelerator.print("reset weights of lambdanet")
             self.model.apply(reset_weights)
 
