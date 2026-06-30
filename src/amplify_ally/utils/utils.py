@@ -14,6 +14,7 @@ def save_aux_state(
     idx_order: np.ndarray,
     best_reg: dict | None = None,
     centroid: np.ndarray | None = None,
+    optimizer_reg_state: dict | None = None,
 ) -> None:
     folder = os.path.join(chk_dir, f"checkpoint_{it}")
     os.makedirs(folder, exist_ok=True)
@@ -24,12 +25,14 @@ def save_aux_state(
         torch.save(best_reg, os.path.join(folder, "lambdanet.pt"))
     if centroid is not None:
         np.save(os.path.join(folder, "centroid.npy"), centroid)
+    if optimizer_reg_state is not None:
+        torch.save(optimizer_reg_state, os.path.join(folder, "optimizer_reg.pt"))
 
 def load_aux_state(
     chk_dir: str,
     it: int,
     dtype: torch.dtype,
-) -> Tuple[torch.Tensor, np.ndarray, np.ndarray, np.ndarray | None]:
+) -> Tuple[torch.Tensor, np.ndarray, np.ndarray, np.ndarray | None, dict | None, dict | None]:
     folder = os.path.join(chk_dir, f"checkpoint_{it}")
     lambdas_path = os.path.join(folder, "lambdas.npy")
     flag_path = os.path.join(folder, "flag.npy")
@@ -38,7 +41,7 @@ def load_aux_state(
     missing = [p for p in [lambdas_path, flag_path, idx_order_path] if not os.path.exists(p)]
     if missing:
         print(f"[resume] WARNING: checkpoint files not found: {missing}. Starting from scratch.")
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     lambdas = torch.from_numpy(np.load(lambdas_path)).to(dtype)
     flag = np.load(flag_path)
@@ -47,8 +50,14 @@ def load_aux_state(
     centroid_path = os.path.join(folder, "centroid.npy")
     centroid = np.load(centroid_path) if os.path.exists(centroid_path) else None
 
+    lambdanet_path = os.path.join(folder, "lambdanet.pt")
+    best_reg = torch.load(lambdanet_path, map_location="cpu") if os.path.exists(lambdanet_path) else None
+
+    optimizer_reg_path = os.path.join(folder, "optimizer_reg.pt")
+    optimizer_reg_state = torch.load(optimizer_reg_path, map_location="cpu") if os.path.exists(optimizer_reg_path) else None
+
     print(f"[resume] Loaded checkpoint state from {folder}")
-    return lambdas, flag, idx_order, centroid
+    return lambdas, flag, idx_order, centroid, best_reg, optimizer_reg_state
 
 def get_wandb_run_id(dir: str, resume: bool, is_main_process: bool) -> str:
     run_id_path = os.path.join(dir, "wandb_run_id.txt")

@@ -28,6 +28,7 @@ from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
+from .resume import restore_from_checkpoint
 
 
 def trainer_ally(cfg: DictConfig) -> None:
@@ -195,26 +196,16 @@ def trainer_ally(cfg: DictConfig) -> None:
     emb_dataloader = accelerator.prepare_data_loader(emb_dataloader)
 
     # Resume block
+    resume_from_mid_rd = False
     if cfg.trainer.resume and it > 0:
-        accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, flag, idx_order, centroid = load_aux_state(chk_dir, it, dtype_pad_mask)
-        rd_path = os.path.join(cfg.trainer.dir, "rd_completed.txt")
-        if os.path.exists(rd_path):
-            rd_offset = int(open(rd_path).read().strip())
-            accelerator.print(f"[resume] Resuming from round {rd_offset + 1}")
-
-        # Rebuild the dataloader using the idx order from previous checkpoint
-        train_dataloader = DataLoader(
-                dataset=dataset.update(idx_order),
-                batch_size=cfg.trainer.train.per_device_batch_size,
-                shuffle=False,
-                collate_fn=collator,
-                num_workers=cfg.trainer.train.num_workers,
-                prefetch_factor=2,
-                pin_memory=True,
-                persistent_workers=False,
-            )
-        dataloader = accelerator.prepare_data_loader(train_dataloader)
+        rs = restore_from_checkpoint(
+            chk_dir=chk_dir, it=it, cfg=cfg, accelerator=accelerator,
+            reg=reg, optimizer_reg=optimizer_reg,
+            dtype_pad_mask=dtype_pad_mask, dtype_reg_head=dtype_reg_head,
+            dataset=dataset, collator=collator, metrics=metrics,
+        )
+        lambdas, flag, idx_order, centroid, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.centroid, rs.best_reg
+        rd_offset, dataloader, resume_from_mid_rd = rs.rd_offset, rs.dataloader, rs.resume_from_mid_rd
         
     # Get loss functions
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
@@ -243,8 +234,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     for rd in range(rd_offset + 1, cfg.strategy.max_rds + 1):
         accelerator.print(f"#### Round {rd} ####")
 
-        # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
-        if rd != 1:
+        # Rebuild train data loader according to the order of informativeness and diversity
+        if rd != 1 and not resume_from_mid_rd: # if resume from mid round, use the dataloader built from resume block
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
                 embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader, accelerator=accelerator)
@@ -319,9 +310,11 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             dataloader = accelerator.prepare_data_loader(dataloader)
 
-            # reset dual lr to initial value 
+            # reset dual lr to initial value
             dual_lr = cfg.strategy.dual_lr
-            
+
+        resume_from_mid_rd = False  # only skip for the first round of a mid-round resume
+
         for global_id, x, y, pad_mask in dataloader:
             global_id = np.array(global_id.cpu())
 
@@ -485,7 +478,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid, optimizer_reg.state_dict())
                     accelerator.wait_for_everyone()
                     print(f"Done on rank {accelerator.process_index}")
                     sys.exit(0)
@@ -494,7 +487,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid, optimizer_reg.state_dict())
                         with open(os.path.join(cfg.trainer.dir, "rd_completed.txt"), "w") as f:
                             f.write(str(rd))
                     break
