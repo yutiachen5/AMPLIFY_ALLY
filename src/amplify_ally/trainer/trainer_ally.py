@@ -1,9 +1,7 @@
 import os
 import gc
 import re
-import sys
 import json
-import signal
 import shutil
 import numpy as np
 from tqdm import tqdm
@@ -11,7 +9,6 @@ from omegaconf import OmegaConf, DictConfig
 
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from accelerate.utils import DistributedType, InitProcessGroupKwargs, ProjectConfiguration, set_seed, broadcast_object_list
 from datetime import timedelta
@@ -24,7 +21,7 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
+from ..utils import save_aux_state
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
@@ -50,6 +47,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     elif os.path.exists(chk_dir):
         # This regular expression was taken from accelerator.load_state()
         it = max(int(re.findall(r"[\/]?([0-9]+)(?=[^\/]*$)", folder)[0]) for folder in os.listdir(chk_dir))
+        if cfg.trainer.resume_it is not None:
+            it = cfg.trainer.resume_it
         # Remove empty checkpoint folders
         while len(os.listdir(os.path.join(chk_dir, f"checkpoint_{it}"))) == 0:
             shutil.rmtree(os.path.join(chk_dir, f"checkpoint_{it}"), ignore_errors=True)
@@ -62,8 +61,8 @@ def trainer_ally(cfg: DictConfig) -> None:
         total_limit=cfg.trainer.max_checkpoints,
         iteration=it + 1,
     )
-    # Large timeout covers single-process ops (K-means, etc.) where one rank
-    # computes while the other waits at broadcast_object_list.
+
+    # Large timeout covers single-process ops where one rank computes while the other waits at broadcast_object_list.
     pg_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=4))
     accelerator = Accelerator(
         kwargs_handlers=[pg_kwargs],
@@ -73,14 +72,13 @@ def trainer_ally(cfg: DictConfig) -> None:
         project_config=project_config,
     )
 
-    # Initialise the wandb run and pass wandb parameters
+    # Initialise the wandb run 
     os.makedirs(cfg.wandb.dir, exist_ok=True)
-    run_id = get_wandb_run_id(dir=cfg.wandb.dir, resume=cfg.trainer.resume, is_main_process=accelerator.is_main_process)
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
         init_kwargs={
             "wandb": {
-                "name": cfg.wandb.name, # this should be the same as old job if resuming
+                "name": cfg.wandb.name,
                 "entity": cfg.wandb.entity,
                 "config": OmegaConf.to_container(cfg)
                 | {"distributed_type": accelerator.distributed_type}
@@ -89,8 +87,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 "dir": cfg.wandb.dir,
                 "mode": cfg.wandb.mode,
                 "anonymous": "allow",
-                "resume": "allow" if cfg.trainer.resume else "never",
-                "id": run_id, # the run to resume tracking on wandb
             }
         },
     )
@@ -106,7 +102,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     metrics = Metrics()
     accelerator.register_for_checkpointing(metrics)
 
-    # Initialize embedding model, regression head, optimizer, scheduler, and SWE pooling if specified
+    # Initialize embedding model, regression head, optimizer, and scheduler
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
     reg, best_reg = LambdaNet(input_dim=cfg.model.hidden_size), None
     optimizer = get_optimizer(model, **cfg.optimizer)
@@ -117,13 +113,13 @@ def trainer_ally(cfg: DictConfig) -> None:
     accelerator.log({"model_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)})
 
     # Get the dtype for the pad_mask and class_weights
-    dtype_pad_mask, dtype_class_weight, dtype_reg_head = torch.float32, torch.float32, torch.float32
+    dtype_pad_mask, dtype_class_weight = torch.float32, torch.float32
     if accelerator.mixed_precision == "fp16":
-        dtype_pad_mask, dtype_reg_head = torch.float16, torch.float16
+        dtype_pad_mask = torch.float16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.float16
-    elif accelerator.mixed_precision == "bf16": # default
-        dtype_pad_mask, dtype_reg_head = torch.bfloat16, torch.bfloat16
+    elif accelerator.mixed_precision == "bf16": 
+        dtype_pad_mask = torch.bfloat16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.bfloat16
 
@@ -159,13 +155,17 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Constrained learning or not
     constrained = (cfg.strategy.epsilon != 1000)
 
+    # Resume checking
+    if cfg.trainer.resume and cfg.trainer.resume_it is None:
+        raise ValueError("trainer.resume_it must be set when trainer.resume=True")
+
     # Initialize parameters for constrained learning
-    rd_offset = 0
+    rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
     lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
-    centroid = None  # warm-start K-means: carries fitted centroids across rounds
+    centroid = None  # warm-start K-means
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -174,7 +174,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         device=accelerator.device,
         seed=cfg.seed,
         accelerator=accelerator,
-        dtype=dtype_reg_head,
+        dtype=dtype_pad_mask,
         **cfg.strategy,
     )
 
@@ -190,37 +190,23 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
-
-    reg = reg.to(device=accelerator.device, dtype=dtype_reg_head)
+    reg = reg.to(device=accelerator.device, dtype=dtype_pad_mask)
     eval_dataloaders = {k: accelerator.prepare_data_loader(v) for k, v in eval_dataloaders.items()}
     emb_dataloader = accelerator.prepare_data_loader(emb_dataloader)
 
     # Resume block
-    resume_from_mid_rd = False
     if cfg.trainer.resume and it > 0:
         rs = restore_from_checkpoint(
-            chk_dir=chk_dir, it=it, cfg=cfg, accelerator=accelerator,
-            reg=reg, optimizer_reg=optimizer_reg,
-            dtype_pad_mask=dtype_pad_mask, dtype_reg_head=dtype_reg_head,
-            dataset=dataset, collator=collator, metrics=metrics,
+            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps,
+            accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
+            dtype=dtype_pad_mask, dataset=dataset, collator=collator, metrics=metrics,
         )
         lambdas, flag, idx_order, centroid, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.centroid, rs.best_reg
-        rd_offset, dataloader, resume_from_mid_rd = rs.rd_offset, rs.dataloader, rs.resume_from_mid_rd
+        dataloader = rs.dataloader
         
     # Get loss functions
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
     loss_fn_mean = get_loss(accelerator.device, "mean", **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
-
-    # Flag-based SIGTERM handler: set a flag and checkpoint at a safe point after the batch,
-    # so all ranks participate in the collective save_state together.
-    _sigterm_received = False
-
-    def handler(signum, _):
-        nonlocal _sigterm_received
-        _sigterm_received = True
-        print(f"Signal {signum} received on rank {accelerator.process_index}, will checkpoint after current batch")
-
-    signal.signal(signal.SIGTERM, handler)
 
     # Progress bar
     pbar = tqdm(
@@ -231,16 +217,15 @@ def trainer_ally(cfg: DictConfig) -> None:
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
+    # Main MLM loop
     for rd in range(rd_offset + 1, cfg.strategy.max_rds + 1):
         accelerator.print(f"#### Round {rd} ####")
 
-        # Rebuild train data loader according to the order of informativeness and diversity
-        if rd != 1 and not resume_from_mid_rd: # if resume from mid round, use the dataloader built from resume block
-            if constrained:
-                # Extract embeddings after the first round and replace the old emb with new one in later rds
+        if rd != 1:
+            if constrained: # constrained learning
                 embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader, accelerator=accelerator)
 
-                # Sync lambdas/slacks/flag across GPUs before single-process work. Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
+                # Sync lambdas/flag across GPUs before single-process work. Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
                 if accelerator.num_processes > 1:
                     lambdas_g = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).to(accelerator.device)
                     flag_g = torch.as_tensor(flag, dtype=torch.float32).to(accelerator.device)
@@ -249,7 +234,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     lambdas = lambdas_g.cpu()
                     flag = flag_g.cpu().numpy()
 
-                # All ranks train LambdaNet (same data + seed → identical result). Rank 0's output is used as canonical via broadcast below.
+                # All ranks train LambdaNet. Rank 0's output is used via broadcast below.
                 lambdas, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
                     lambdas=lambdas,
@@ -259,7 +244,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy,
                 )
 
-                # Use rank 0's result as canonical; discard rank 1's.
                 lambdas_list = [lambdas]
                 broadcast_object_list(lambdas_list, from_process=0)
                 lambdas = lambdas_list[0]
@@ -310,10 +294,8 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             dataloader = accelerator.prepare_data_loader(dataloader)
 
-            # reset dual lr to initial value
+            # Reset dual lr to initial value
             dual_lr = cfg.strategy.dual_lr
-
-        resume_from_mid_rd = False  # only skip for the first round of a mid-round resume
 
         for global_id, x, y, pad_mask in dataloader:
             global_id = np.array(global_id.cpu())
@@ -335,7 +317,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     out = model(x, pad_mask) 
                     logits = out.logits
 
-                    valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 is for unmasked)
+                    valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 means unmasked)
                     train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
                     train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
 
@@ -355,7 +337,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
                         lr_dual=dual_lr,
-                        dtype=dtype_reg_head,
+                        dtype=dtype_pad_mask,
                         **cfg.strategy,
                     )
 
@@ -398,7 +380,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
                     lr_dual=dual_lr,
-                    dtype=dtype_reg_head,
+                    dtype=dtype_pad_mask,
                     **cfg.strategy,
                 )
 
@@ -473,23 +455,11 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # Reset the gradient
                 optimizer.zero_grad()
 
-                # Save emb mdl and aux stuff when receive the signal
-                if _sigterm_received:
-                    print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
-                    accelerator.save_state()
-                    if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid, optimizer_reg.state_dict())
-                    accelerator.wait_for_everyone()
-                    print(f"Done on rank {accelerator.process_index}")
-                    sys.exit(0)
-
                 # Save emb mdl and aux stuff from the main process in every rd
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
                         save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid, optimizer_reg.state_dict())
-                        with open(os.path.join(cfg.trainer.dir, "rd_completed.txt"), "w") as f:
-                            f.write(str(rd))
                     break
 
         # Log metrics
@@ -520,7 +490,6 @@ def trainer_ally(cfg: DictConfig) -> None:
         if accelerator.is_main_process:
             with open(os.path.join(summary_dir, "lambdas.json"), "w") as f:
                 json.dump(lambda_dict, f, indent=2)
-
 
     # Make sure that the wandb tracker finishes correctly and close the progress bar
     pbar.close()

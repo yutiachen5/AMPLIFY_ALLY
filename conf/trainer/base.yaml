@@ -1,5 +1,6 @@
 dir: outputs
 resume: False
+resume_it: null
 eval_steps: 100
 pg_eval_steps: 1000
 max_checkpoints: 100
