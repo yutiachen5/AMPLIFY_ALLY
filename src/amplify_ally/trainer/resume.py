@@ -15,7 +15,6 @@ class ResumeState:
     lambdas: torch.Tensor
     flag: np.ndarray
     idx_order: np.ndarray
-    centroid: np.ndarray | None
     best_reg: dict | None
     dataloader: DataLoader
 
@@ -35,7 +34,7 @@ def restore_from_checkpoint(
 ) -> ResumeState:
     accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}"))
 
-    lambdas, flag, idx_order, centroid, best_reg, optimizer_reg_state = load_aux_state(chk_dir, it, dtype)
+    lambdas, flag, idx_order, best_reg, optimizer_reg_state = load_aux_state(chk_dir, it, dtype)
 
     if best_reg is not None:
         reg.load_state_dict({k: v.to(device=accelerator.device, dtype=dtype) for k, v in best_reg.items()})
@@ -63,7 +62,6 @@ def restore_from_checkpoint(
         lambdas=lambdas,
         flag=flag,
         idx_order=idx_order,
-        centroid=centroid,
         best_reg=best_reg,
         dataloader=dataloader,
     )

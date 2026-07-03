@@ -1,20 +1,17 @@
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
+
+import gc
+import random
+import numpy as np
+from sklearn.cluster import MiniBatchKMeans
+
+from collections import defaultdict
+from typing import Callable, Dict
 
 from ..tokenizer import ProteinTokenizer
 from .datasets import InMemoryProteinDataset, InMemoryEmbDataset, ProteinGymDataset
 from .data_collator import DataCollatorMLM, ProteinGymCollator
-
-import os
-import gc
-import math
-import random
-import numpy as np
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.preprocessing import MinMaxScaler
-
-from typing import Callable, Dict, Optional
-from collections import defaultdict
 
 
 def get_mlm_dataloader(
@@ -150,7 +147,6 @@ def get_lambdanet_dataloaders(
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,
     flag: np.ndarray,
-    device: torch.device,
     batch_size: int,
     val_size: float = 0.2,
     seed: int = 42,
@@ -212,27 +208,24 @@ def compute_sample_order(
     n_clusters: int = 512,
     per_device_batch_size_kmeans: int = 1024,
     epsilon: int = 2,
-    kmeans_warm_start: bool = False,
-    init_centroids: Optional[np.ndarray] = None,
     **kwargs,
-) -> tuple:
+) -> np.ndarray:
     """Compute the index ordering for the next round (clustering + lambda sort).
     Must run on a single process only.
 
     Returns:
-        (np.ndarray of sample indices, cluster_centers or None)
+        np.ndarray of sample indices
     """
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        return np.random.permutation(np.arange(len(lambdas))), None
+        return np.random.permutation(np.arange(len(lambdas)))
 
-    use_warm_init = kmeans_warm_start and init_centroids is not None
     kmeans_mdl = MiniBatchKMeans(
         n_clusters=n_clusters,
         random_state=seed,
         batch_size=per_device_batch_size_kmeans,
-        n_init=1 if use_warm_init else 'auto',
-        init=init_centroids if use_warm_init else 'k-means++',
+        n_init='auto',
+        init='k-means++',
     )
 
     X = embeddings.detach().to(torch.float32).cpu().numpy()
@@ -262,11 +255,10 @@ def compute_sample_order(
                 _, idx = cluster_to_samples[c][i]
                 updated_idx_order.append(idx)
     updated_idx_order = np.array(updated_idx_order)
-    cluster_centers = kmeans_mdl.cluster_centers_.copy()
     del cluster_to_samples
     gc.collect()
 
-    return updated_idx_order, cluster_centers
+    return updated_idx_order
 
 
 def update_mlm_dataloader(

@@ -165,7 +165,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
-    centroid = None  # warm-start K-means
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -187,6 +186,9 @@ def trainer_ally(cfg: DictConfig) -> None:
         **cfg.strategy,
     )
 
+    # Compile before wrapping with DDP/DeepSpeed, per https://pytorch.org/docs/stable/notes/ddp.html#torchdynamo-ddpoptimizer
+    model = torch.compile(model)
+
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
@@ -201,7 +203,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
             dtype=dtype_pad_mask, dataset=dataset, collator=collator, metrics=metrics,
         )
-        lambdas, flag, idx_order, centroid, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.centroid, rs.best_reg
+        lambdas, flag, idx_order, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.best_reg
         dataloader = rs.dataloader
         
     # Get loss functions
@@ -248,11 +250,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                 broadcast_object_list(lambdas_list, from_process=0)
                 lambdas = lambdas_list[0]
 
-                idx_order, centroid = compute_sample_order(
+                idx_order = compute_sample_order(
                     embeddings=embeddings,
                     lambdas=lambdas,
                     seed=cfg.seed,
-                    init_centroids=centroid,
                     **cfg.strategy,
                 )
 
@@ -273,7 +274,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     torch.cuda.empty_cache()
             else:
                 # Unconstrained: both ranks compute, broadcast rank 0's result as canonical.
-                idx_order, _ = compute_sample_order(
+                idx_order = compute_sample_order(
                     embeddings=torch.zeros(len(dataset)),
                     lambdas=lambdas,
                     seed=cfg.seed,
@@ -459,7 +460,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, centroid, optimizer_reg.state_dict())
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                     break
 
         # Log metrics

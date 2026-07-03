@@ -144,7 +144,6 @@ class LambdaNetTrainer:
             embeddings=embeddings,
             lambdas=self.lambdas,
             flag=self.flag,
-            device=self.device,
             batch_size=self.per_device_batch_size,
             val_size=val_size,
             seed=seed,

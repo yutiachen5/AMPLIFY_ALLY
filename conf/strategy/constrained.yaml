@@ -24,4 +24,3 @@ pooling_method: mean
 
 # kmeans
 n_clusters: 128
-kmeans_warm_start: False
