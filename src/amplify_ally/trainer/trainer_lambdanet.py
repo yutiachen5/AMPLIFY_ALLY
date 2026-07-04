@@ -14,7 +14,8 @@ class LambdaNetTrainer:
     """
     Trainer class for the LambdaNet model.
     Instantiate once before the pretraining loop; call `get_lambdas()` each round.
-    Model state is kept in memory and reused across rounds.
+    Model weights and optimizer state are cold-reset to their initial (construction-time)
+    values at the start of every round, then warm-restarted with a scaled LR.
 
     Both ranks run LambdaNet training independently (same data + same seed →
     deterministic, identical results).  The caller broadcasts rank 0's output as
@@ -30,6 +31,7 @@ class LambdaNetTrainer:
         accelerator: Accelerator,
         per_device_batch_size_lambdanet: int,
         scale_lr_factor: int,
+        reset_lambdanet: bool = True,
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ):
@@ -37,13 +39,17 @@ class LambdaNetTrainer:
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
         self.scale_lr_factor = scale_lr_factor
+        self.reset_lambdanet = reset_lambdanet
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
 
-        self.model = model # resume on model in prev rd as it always sits in mem
+        self.model = model
         self.optimizer = optimizer
         self.scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
         self.base_lr = optimizer.param_groups[0]["lr"]
+
+        # Snapshot of the initial (random-init) weights, restored at the start of every round.
+        self.initial_state_dict = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
         self.lambdas = None
         self.flag = None
@@ -52,7 +58,7 @@ class LambdaNetTrainer:
         self.trained_lambdas = None
 
     def _setup_round(self, rd: int, lambdas: torch.Tensor, flag: np.ndarray) -> None:
-        """Update per-round data and double the LR for a warm restart."""
+        """Update per-round data, cold-reset model weights + optimizer state, and scale the LR for a warm restart."""
         self.lambdas = lambdas
         self.flag = flag
 
@@ -61,12 +67,18 @@ class LambdaNetTrainer:
         self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
         self.trained_lambdas = lambdas[self.trained_idx]
 
+        # reset model weights and optimizer state
+        if self.reset_lambdanet:
+            self.model.load_state_dict(self.initial_state_dict)
+            self.optimizer.state.clear()
+
         # adjust learning rate
         max_lr = 1e-3  # make this in config later??
         scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd-2)), max_lr) # rd starts from 2
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
-        self.accelerator.print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
+        reset_msg = "Reset LambdaNet weights + optimizer state. " if self.reset_lambdanet else ""
+        self.accelerator.print(f"[Round {rd}] {reset_msg}LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
 
         # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)

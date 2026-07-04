@@ -186,9 +186,6 @@ def trainer_ally(cfg: DictConfig) -> None:
         **cfg.strategy,
     )
 
-    # Compile before wrapping with DDP/DeepSpeed, per https://pytorch.org/docs/stable/notes/ddp.html#torchdynamo-ddpoptimizer
-    model = torch.compile(model)
-
     # Accelerate
     dataloader = train_dataloader
     model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
