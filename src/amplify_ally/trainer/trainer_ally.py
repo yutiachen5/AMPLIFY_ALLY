@@ -72,23 +72,27 @@ def trainer_ally(cfg: DictConfig) -> None:
         project_config=project_config,
     )
 
-    # Initialise the wandb run 
+    # Initialise the wandb run
     os.makedirs(cfg.wandb.dir, exist_ok=True)
+    wandb_init_kwargs = {
+        "name": cfg.wandb.name,
+        "entity": cfg.wandb.entity,
+        "config": OmegaConf.to_container(cfg)
+        | {"distributed_type": accelerator.distributed_type}
+        | {"mixed_precision": accelerator.mixed_precision},
+        "tags": cfg.wandb.tags,
+        "dir": cfg.wandb.dir,
+        "mode": cfg.wandb.mode,
+        "anonymous": "allow",
+    }
+    # If a wandb run ID was given (e.g. resuming after an HPC preemption), log
+    # into that existing run instead of starting a new one.
+    if cfg.strategy.wandb_run_id:
+        wandb_init_kwargs["id"] = cfg.strategy.wandb_run_id
+        wandb_init_kwargs["resume"] = "allow"
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
-        init_kwargs={
-            "wandb": {
-                "name": cfg.wandb.name,
-                "entity": cfg.wandb.entity,
-                "config": OmegaConf.to_container(cfg)
-                | {"distributed_type": accelerator.distributed_type}
-                | {"mixed_precision": accelerator.mixed_precision},
-                "tags": cfg.wandb.tags,
-                "dir": cfg.wandb.dir,
-                "mode": cfg.wandb.mode,
-                "anonymous": "allow",
-            }
-        },
+        init_kwargs={"wandb": wandb_init_kwargs},
     )
 
     # Set the seed

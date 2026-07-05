@@ -157,3 +157,5 @@ jobs/
 # specified file types
 *.txt
 *.sh
+
+scripts/viz.ipynb

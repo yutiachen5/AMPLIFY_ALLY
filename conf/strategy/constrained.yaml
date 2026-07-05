@@ -18,7 +18,10 @@ optimizer_lr: 1e-4
 print_every: 1
 patience: 6
 scale_lr_factor: 1
-reset_lambdanet: true # if true, cold-reset LambdaNet weights + optimizer state at the start of every round
+reset_lambdanet: true 
+
+# optional: set to an existing wandb run ID to resume or leave null to start a new run
+wandb_run_id: null
 
 # embedding pooling
 pooling_method: mean
