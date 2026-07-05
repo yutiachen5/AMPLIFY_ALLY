@@ -70,15 +70,12 @@ class Embedder:
         all_ids = torch.cat(local_ids, dim=0)    # [N_local]
         all_embs = torch.cat(local_embs, dim=0)  # [N_local, D]
 
-        if accelerator is not None and accelerator.num_processes > 1:
-            # Gather from all GPUs; accelerator.gather returns [N_total] after concat
+        if accelerator is not None and accelerator.num_processes > 1: # dedup batches when number of batches divides evenly across ranks
             all_ids = accelerator.gather(all_ids.to(self.device)).cpu()
             all_embs = accelerator.gather(all_embs.to(self.device)).cpu()
 
-            # Deduplicate padding that accelerate adds when len(dataset) % num_processes != 0
-            # and restore original dataset order.
             sort_idx = torch.argsort(all_ids, stable=True)
-            # keep only the first occurrence of each id (duplicates come from padding)
+            # keep only the first occurrence of each id
             seen = set()
             keep = []
             for i in sort_idx.tolist():
@@ -88,7 +85,6 @@ class Embedder:
                     keep.append(i)
             keep = torch.tensor(keep, dtype=torch.long)
             all_embs = all_embs[keep]
-            # all_embs is now sorted by global_id with no duplicates
 
         return all_embs.to(dtype=self.dtype)
 

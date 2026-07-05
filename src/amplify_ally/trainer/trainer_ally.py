@@ -228,14 +228,24 @@ def trainer_ally(cfg: DictConfig) -> None:
             if constrained: # constrained learning
                 embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader, accelerator=accelerator)
 
-                # Sync lambdas/flag across GPUs before single-process work. Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
+                # Sync lambdas/flag across GPUs before single-process work. Both ranks
+                # entered this round with an identical array (from the previous
+                # broadcast), and each GPU only updated its own non-overlapping
+                # indices since then — so we all-reduce SUM just the per-round DELTA
+                # (nonzero only at each rank's touched indices) and add it back onto
+                # the already-shared base. 
                 if accelerator.num_processes > 1:
                     lambdas_g = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).to(accelerator.device)
                     flag_g = torch.as_tensor(flag, dtype=torch.float32).to(accelerator.device)
-                    dist.all_reduce(lambdas_g, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(flag_g, op=dist.ReduceOp.SUM)
-                    lambdas = lambdas_g.cpu()
-                    flag = flag_g.cpu().numpy()
+                    base_lambdas_g = lambdas_round_start.to(accelerator.device)
+                    base_flag_g = torch.as_tensor(flag_round_start, dtype=torch.float32).to(accelerator.device)
+
+                    lambdas_delta = lambdas_g - base_lambdas_g
+                    flag_delta = flag_g - base_flag_g
+                    dist.all_reduce(lambdas_delta, op=dist.ReduceOp.SUM) # combines all rank with sum operation and writes the same combined result to every rank
+                    dist.all_reduce(flag_delta, op=dist.ReduceOp.SUM)
+                    lambdas = (base_lambdas_g + lambdas_delta).cpu()
+                    flag = (base_flag_g + flag_delta).cpu().numpy()
 
                 # All ranks train LambdaNet. Rank 0's output is used via broadcast below.
                 lambdas, best_reg = lambdanet_trainer.get_lambdas(
@@ -298,6 +308,12 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             # Reset dual lr to initial value
             dual_lr = cfg.strategy.dual_lr
+
+        # Snapshot the canonical (already identical across ranks) lambdas/flag at
+        # round start, so the NEXT round-boundary merge can all-reduce just this
+        # round's delta instead of double-counting the shared base (see above).
+        lambdas_round_start = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).clone()
+        flag_round_start = flag.copy()
 
         for global_id, x, y, pad_mask in dataloader:
             global_id = np.array(global_id.cpu())
