@@ -165,7 +165,10 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize parameters for constrained learning
     rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
-    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
+    # Dual-variable bookkeeping stays fp32 regardless of the model's mixed-precision
+    # dtype: it's dataset-length (cheap either way), and fp16/bf16 rounding compounds
+    # visibly across many small dual-ascent increments and round-boundary merges.
+    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=torch.float32)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
@@ -205,6 +208,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             dtype=dtype_pad_mask, dataset=dataset, collator=collator, metrics=metrics,
         )
         lambdas, flag, idx_order, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.best_reg
+        lambdas = lambdas.to(torch.float32)
         dataloader = rs.dataloader
         
     # Get loss functions
@@ -244,6 +248,16 @@ def trainer_ally(cfg: DictConfig) -> None:
                     flag_delta = flag_g - base_flag_g
                     dist.all_reduce(lambdas_delta, op=dist.ReduceOp.SUM) # combines all rank with sum operation and writes the same combined result to every rank
                     dist.all_reduce(flag_delta, op=dist.ReduceOp.SUM)
+
+                    # Accelerate pads the last batch by duplicating it onto a rank
+                    # when this round's batch count doesn't divide evenly across
+                    # ranks, so a handful of indices can end up touched more than
+                    # once this round (flag_delta > 1) instead of the assumed
+                    # single disjoint touch. Average those instead of summing so a
+                    # padding duplicate doesn't inflate the lambda update.
+                    touch_count = flag_delta.clamp(min=1)
+                    lambdas_delta = torch.where(flag_delta > 1, lambdas_delta / touch_count, lambdas_delta)
+
                     lambdas = (base_lambdas_g + lambdas_delta).cpu()
                     flag = (base_flag_g + flag_delta).cpu().numpy()
 
@@ -256,6 +270,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                     save_dir=cfg.trainer.dir,
                     **cfg.strategy,
                 )
+                # LambdaNet reconstructs this internally at its own (mixed-precision)
+                # dtype; cast back to fp32 so the round-boundary bookkeeping stays
+                # full precision from here on.
+                lambdas = lambdas.to(torch.float32)
 
                 lambdas_list = [lambdas]
                 broadcast_object_list(lambdas_list, from_process=0)
@@ -355,7 +373,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
                         lr_dual=dual_lr,
-                        dtype=dtype_pad_mask,
+                        dtype=torch.float32,
                         **cfg.strategy,
                     )
 
@@ -398,7 +416,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
                     lr_dual=dual_lr,
-                    dtype=dtype_pad_mask,
+                    dtype=torch.float32,
                     **cfg.strategy,
                 )
 
