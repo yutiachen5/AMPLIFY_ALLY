@@ -127,9 +127,7 @@ class LambdaNetTrainer:
         print_every: int = 10,
         patience: int = 3,
         num_workers: int = 4,
-        has_emb: bool = False,
         reset_lambdanet: bool = True,
-        shard_size: int = 1_000_000,
         **kwargs,
     ) -> torch.Tensor:
 

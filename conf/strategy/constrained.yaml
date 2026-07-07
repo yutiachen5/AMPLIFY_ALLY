@@ -23,6 +23,10 @@ reset_lambdanet: True
 patience: 6
 scale_lr_factor: 2
 
+# optional: set to an existing wandb run ID to resume logging into that run
+# (e.g. continuing after an HPC wall-time preemption); leave null to start a new run
+wandb_run_id: null
+
 # embedding pooling
 pooling_method: mean
 

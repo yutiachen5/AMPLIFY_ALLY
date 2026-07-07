@@ -13,7 +13,6 @@ from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
 import torch
-from torch.utils.data import DataLoader
 from accelerate import Accelerator, skip_first_batches
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
@@ -25,10 +24,11 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
+from ..utils import save_aux_state
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
+from .resume import restore_from_checkpoint
 
 
 def trainer_ally(cfg: DictConfig) -> None:
@@ -50,6 +50,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     elif os.path.exists(chk_dir):
         # This regular expression was taken from accelerator.load_state()
         it = max(int(re.findall(r"[\/]?([0-9]+)(?=[^\/]*$)", folder)[0]) for folder in os.listdir(chk_dir))
+        if cfg.trainer.resume_it is not None:
+            it = cfg.trainer.resume_it
         # Remove empty checkpoint folders
         while len(os.listdir(os.path.join(chk_dir, f"checkpoint_{it}"))) == 0:
             shutil.rmtree(os.path.join(chk_dir, f"checkpoint_{it}"), ignore_errors=True)
@@ -69,26 +71,27 @@ def trainer_ally(cfg: DictConfig) -> None:
         project_config=project_config,
     )
 
-    # Initialise the wandb run and pass wandb parameters
+    # Initialise the wandb run
     os.makedirs(cfg.wandb.dir, exist_ok=True)
-    run_id = get_wandb_run_id(dir=cfg.wandb.dir, resume=cfg.trainer.resume, is_main_process=accelerator.is_main_process)
+    wandb_init_kwargs = {
+        "name": cfg.wandb.name,
+        "entity": cfg.wandb.entity,
+        "config": OmegaConf.to_container(cfg)
+        | {"distributed_type": accelerator.distributed_type}
+        | {"mixed_precision": accelerator.mixed_precision},
+        "tags": cfg.wandb.tags,
+        "dir": cfg.wandb.dir,
+        "mode": cfg.wandb.mode,
+        "anonymous": "allow",
+    }
+    # If a wandb run ID was given (e.g. resuming after an HPC preemption), log
+    # into that existing run instead of starting a new one.
+    if cfg.strategy.wandb_run_id:
+        wandb_init_kwargs["id"] = cfg.strategy.wandb_run_id
+        wandb_init_kwargs["resume"] = "allow"
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
-        init_kwargs={
-            "wandb": {
-                "name": cfg.wandb.name, # this should be the same as old job if resuming
-                "entity": cfg.wandb.entity,
-                "config": OmegaConf.to_container(cfg)
-                | {"distributed_type": accelerator.distributed_type}
-                | {"mixed_precision": accelerator.mixed_precision},
-                "tags": cfg.wandb.tags,
-                "dir": cfg.wandb.dir,
-                "mode": cfg.wandb.mode,
-                "anonymous": "allow",
-                "resume": "allow" if cfg.trainer.resume else "never",
-                "id": run_id, # the run to resume tracking on wandb
-            }
-        },
+        init_kwargs={"wandb": wandb_init_kwargs},
     )
 
     # Set the seed
@@ -155,9 +158,13 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Constrained learning or not
     constrained = (cfg.strategy.epsilon != 1000)
 
+    # Resume checking
+    if cfg.trainer.resume and cfg.trainer.resume_it is None:
+        raise ValueError("trainer.resume_it must be set when trainer.resume=True")
+
     # Initialize parameters for constrained learning
-    rd_offset = 0
-    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask) 
+    rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
+    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
@@ -193,25 +200,13 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Resume block
     if cfg.trainer.resume and it > 0:
-        accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, slacks, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
-        rd_path = os.path.join(cfg.trainer.dir, "rd_completed.txt")
-        if os.path.exists(rd_path):
-            rd_offset = int(open(rd_path).read().strip())
-            print(f"[resume] Resuming from round {rd_offset + 1}")
-
-        # Rebuild the dataloader using the idx order from previous checkpoint
-        train_dataloader = DataLoader(
-                dataset=dataset.update(idx_order),
-                batch_size=cfg.trainer.train.per_device_batch_size,
-                shuffle=False,
-                collate_fn=collator,
-                num_workers=cfg.trainer.train.num_workers,
-                prefetch_factor=2,
-                pin_memory=True,
-                persistent_workers=False,
-            )
-        dataloader = accelerator.prepare_data_loader(train_dataloader)
+        rs = restore_from_checkpoint(
+            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps,
+            accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
+            dtype=dtype_pad_mask, reg_dtype=dtype_reg_head, dataset=dataset, collator=collator, metrics=metrics,
+        )
+        lambdas, slacks, flag, idx_order, best_reg = rs.lambdas, rs.slacks, rs.flag, rs.idx_order, rs.best_reg
+        dataloader = rs.dataloader
         
     # Get loss functions
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
@@ -221,7 +216,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     def handler(signum, frame):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
         accelerator.save_state() # this will increment the it number
-        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order)
+        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg, optimizer_reg.state_dict())
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -461,9 +456,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg)
-                        with open(os.path.join(cfg.trainer.dir, "rd_completed.txt"), "w") as f:
-                            f.write(str(rd))
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg, optimizer_reg.state_dict())
                     break
 
         # Log metrics
