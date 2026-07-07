@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from accelerate import Accelerator
 
@@ -129,7 +128,7 @@ class LambdaNetTrainer:
         patience: int = 3,
         num_workers: int = 4,
         has_emb: bool = False,
-        resume: bool = False,
+        reset_lambdanet: bool = True,
         shard_size: int = 1_000_000,
         **kwargs,
     ) -> torch.Tensor:
@@ -140,13 +139,12 @@ class LambdaNetTrainer:
 
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
-        if resume:
-            reg_path = os.path.join(save_dir, "checkpoints", f"checkpoint_{rd-1}", "lambdanet.pt")
-            print(f"loading lambdanet from: {reg_path}")
-            self.model.load_state_dict(torch.load(reg_path, map_location=self.device))
-        else:
-            print("reset weights of lambdanet")
+        if reset_lambdanet:
+            print("reset weights + optimizer state of lambdanet")
             self.model.apply(reset_weights)
+            self.optimizer.state.clear()
+        else:
+            print("reusing in-memory lambdanet weights + optimizer state")
         
         # Build dataloaders for lambdanet
         scale, y_min, loaders = get_lambdanet_dataloaders(
