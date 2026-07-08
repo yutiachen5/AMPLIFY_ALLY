@@ -86,8 +86,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     }
     # If a wandb run ID was given (e.g. resuming after an HPC preemption), log
     # into that existing run instead of starting a new one.
-    if cfg.strategy.wandb_run_id:
-        wandb_init_kwargs["id"] = cfg.strategy.wandb_run_id
+    if cfg.trainer.wandb_run_id:
+        wandb_init_kwargs["id"] = cfg.trainer.wandb_run_id
         wandb_init_kwargs["resume"] = "allow"
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
@@ -165,7 +165,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Initialize parameters for constrained learning
     rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
     lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
-    slacks = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
@@ -205,7 +204,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
             dtype=dtype_pad_mask, reg_dtype=dtype_reg_head, dataset=dataset, collator=collator, metrics=metrics,
         )
-        lambdas, slacks, flag, idx_order, best_reg = rs.lambdas, rs.slacks, rs.flag, rs.idx_order, rs.best_reg
+        lambdas, flag, idx_order, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.best_reg
         dataloader = rs.dataloader
         
     # Get loss functions
@@ -216,7 +215,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     def handler(signum, frame):
         print(f"Signal {signum} received on rank {accelerator.process_index}, checkpointing...")
         accelerator.save_state() # this will increment the it number
-        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg, optimizer_reg.state_dict())
+        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
         accelerator.wait_for_everyone()
         print(f"Done on rank {accelerator.process_index}")
         sys.exit(0)
@@ -293,7 +292,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             # Extract the lambda for the current batch
             lambdas_current = lambdas[global_id]
-            slacks_current = slacks[global_id]
 
             # Keep recored the number of times each sample was seen by the model
             flag[global_id] += 1
@@ -322,31 +320,27 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                     # Compute gradient and update dual variables
-                    lambdas_updated, slacks_updated = update_dual_variables(
+                    lambdas_updated = update_dual_variables(
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
-                        slacks_current=slacks_current,
                         lr_dual=dual_lr,
                         dtype=dtype_reg_head,
-                        **cfg.strategy, 
+                        **cfg.strategy,
                     )
 
                     lagrangian, constraint_violations = get_lagrangian(
-                        device=accelerator.device, 
-                        train_loss_seq=train_loss_seq, 
-                        lambdas_current=lambdas_current, 
-                        slacks_current=slacks_current, 
-                        lr_dual=dual_lr, 
+                        device=accelerator.device,
+                        train_loss_seq=train_loss_seq,
+                        lambdas_current=lambdas_current,
+                        lr_dual=dual_lr,
                         **cfg.strategy
                     )
                     accelerator.backward(lagrangian)
 
 
                     lambdas[global_id] = lambdas_updated.detach().cpu()
-                    slacks[global_id] = slacks_updated.detach().cpu() 
 
                     metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
-                    metrics["slack_mean"] = slacks[flag >= 1].mean().item()
                     metrics["constraint_violations"] = constraint_violations
             else:
                 out = model(x, pad_mask) 
@@ -370,30 +364,26 @@ def trainer_ally(cfg: DictConfig) -> None:
                 metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                 # Compute gradient and update dual variables
-                lambdas_updated, slacks_updated = update_dual_variables(
+                lambdas_updated = update_dual_variables(
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
-                    slacks_current=slacks_current,
                     lr_dual=dual_lr,
                     dtype=dtype_reg_head,
-                    **cfg.strategy, 
+                    **cfg.strategy,
                 )
 
                 lagrangian, constraint_violations = get_lagrangian(
-                    device=accelerator.device, 
-                    train_loss_seq=train_loss_seq, 
-                    lambdas_current=lambdas_current, 
-                    slacks_current=slacks_current, 
-                    lr_dual=dual_lr, 
+                    device=accelerator.device,
+                    train_loss_seq=train_loss_seq,
+                    lambdas_current=lambdas_current,
+                    lr_dual=dual_lr,
                     **cfg.strategy
                 )
                 accelerator.backward(lagrangian)
 
                 lambdas[global_id] = lambdas_updated.detach().cpu()
-                slacks[global_id] = slacks_updated.detach().cpu() 
 
                 metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
-                metrics["slack_mean"] = slacks[flag >= 1].mean().item()
                 metrics["constraint_violations"] = constraint_violations
 
                 # Evaluate the model
@@ -412,7 +402,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.trainer.pg_eval_steps == 0:
                     if accelerator.is_main_process:
                         proteingym_scc = evaluate_proteingym(
-                            model=model,
+                            model=accelerator.unwrap_model(model),
                             dataloader=pg_dataloader,
                             dataset=pg_dataset,
                             device=accelerator.device,
@@ -456,7 +446,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, slacks, flag, idx_order, best_reg, optimizer_reg.state_dict())
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                     break
 
         # Log metrics

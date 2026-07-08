@@ -13,7 +13,6 @@ from ..utils import load_aux_state
 @dataclass
 class ResumeState:
     lambdas: torch.Tensor
-    slacks: torch.Tensor
     flag: np.ndarray
     idx_order: np.ndarray
     best_reg: dict | None
@@ -36,7 +35,7 @@ def restore_from_checkpoint(
 ) -> ResumeState:
     accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}"))
 
-    lambdas, slacks, flag, idx_order, best_reg, optimizer_reg_state = load_aux_state(chk_dir, it, dtype)
+    lambdas, flag, idx_order, best_reg, optimizer_reg_state = load_aux_state(chk_dir, it, dtype)
 
     if best_reg is not None:
         reg.load_state_dict({k: v.to(device=accelerator.device, dtype=reg_dtype) for k, v in best_reg.items()})
@@ -62,7 +61,6 @@ def restore_from_checkpoint(
 
     return ResumeState(
         lambdas=lambdas,
-        slacks=slacks,
         flag=flag,
         idx_order=idx_order,
         best_reg=best_reg,

@@ -3,8 +3,6 @@ import torch
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
 
-from typing import Tuple
-
 from ..tokenizer import ProteinTokenizer
 
 
@@ -68,16 +66,13 @@ def get_lagrangian(
     device: torch.device,
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
-    slacks_current: torch.Tensor,
     lr_dual: float = 0.1,
     epsilon: float = 2.4,
-    alpha: float = 0.1,
     **kwargs,
 ) -> torch.Tensor:
     lambdas_current = lambdas_current.to(device)
-    slacks_current = slacks_current.to(device)
 
-    lagrangian = (train_loss_seq*(1+lambdas_current) - lambdas_current*(epsilon)).nanmean() 
+    lagrangian = (train_loss_seq*(1+lambdas_current) - lambdas_current*(epsilon)).nanmean()
     constraint_violations = (train_loss_seq - (epsilon)).nanmean().item() # usually 0 positive
 
     return lagrangian, constraint_violations
@@ -86,29 +81,17 @@ def get_lagrangian(
 def update_dual_variables(
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
-    slacks_current: torch.Tensor,
     lr_dual: float = 0.1,
     dtype: torch.dtype = torch.float32,
     epsilon: float = 2.4,
-    slack_lr: float = 0.01,
-    alpha: float = 0.1,
     **kwargs,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
 
     train_loss_seq = train_loss_seq.detach().cpu().to(dtype)
-    nan_mask = torch.isnan(train_loss_seq)
-    nan_idxs = torch.nonzero(nan_mask, as_tuple=True)
-    
-    if slack_lr <= 0: # update without slack, slack should be 0 always
-        train_loss_seq[nan_idxs] = epsilon
-        lambdas_current += lr_dual * (train_loss_seq - epsilon)
-    else: # update with slack
-        lambdas_prev = lambdas_current.clone()
-        train_loss_seq[nan_idxs] = epsilon + slacks_current[nan_idxs]
-        lambdas_current += lr_dual * (train_loss_seq - (epsilon + slacks_current))
-        slacks_current -= slack_lr * (alpha * slacks_current - lambdas_prev) 
+    nan_idxs = torch.nonzero(torch.isnan(train_loss_seq), as_tuple=True)
 
+    train_loss_seq[nan_idxs] = epsilon
+    lambdas_current += lr_dual * (train_loss_seq - epsilon)
     lambdas_current.data.clamp_(min=0)
-    slacks_current.data.clamp_(min=0)
 
-    return lambdas_current, slacks_current
+    return lambdas_current
