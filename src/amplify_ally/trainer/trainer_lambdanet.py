@@ -24,12 +24,14 @@ class LambdaNetTrainer:
         seed: int,
         accelerator: Accelerator,
         per_device_batch_size_lambdanet: int,
+        scale_lr_factor: int = 2,
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ):
         self.seed = seed
         self.accelerator = accelerator
         self.per_device_batch_size = per_device_batch_size_lambdanet
+        self.scale_lr_factor = scale_lr_factor
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
 
@@ -45,7 +47,7 @@ class LambdaNetTrainer:
         self.trained_lambdas = None
 
     def _setup_round(self, rd: int, lambdas: torch.Tensor, flag: np.ndarray) -> None:
-        """Update per-round data; reset LR to base_lr and reset the scheduler, but keep model/optimizer state."""
+        """Update per-round data and scale the LR for a warm restart."""
         self.lambdas = lambdas
         self.flag = flag
 
@@ -54,13 +56,14 @@ class LambdaNetTrainer:
         self.untrained_idx = torch.where(torch.as_tensor(~mask))[0]
         self.trained_lambdas = lambdas[self.trained_idx]
 
-        # reset LR to base value each round (val loss scale/distribution shifts round to round,
-        # so a decayed LR from a prior round isn't meaningful here)
+        # adjust learning rate
+        max_lr = 1e-3  # make this in config later??
+        scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd - 2)), max_lr)  # rd starts from 2
         for pg in self.optimizer.param_groups:
-            pg["lr"] = self.base_lr
-        print(f"[Round {rd}] LR reset to base_lr = {self.base_lr:.2e}")
+            pg["lr"] = scaled_lr
+        print(f"[Round {rd}] LR = base × {self.scale_lr_factor}^{rd-2} → {scaled_lr:.2e}")
 
-        # reset scheduler state (best/patience tracking isn't comparable across rounds)
+        # reset scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="min", factor=0.5, patience=3)
 
     def train(self, dataloader: DataLoader) -> float:
@@ -124,11 +127,22 @@ class LambdaNetTrainer:
         print_every: int = 10,
         patience: int = 3,
         num_workers: int = 4,
+        reset_lambdanet: bool = True,
         **kwargs,
     ) -> torch.Tensor:
 
-        # Refresh per-round state (LR + scheduler); model/optimizer weights carry over from the prior round
+        def reset_weights(m):
+            if hasattr(m, 'reset_parameters'):
+                m.reset_parameters()
+
+        # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
+        if reset_lambdanet:
+            print("reset weights + optimizer state of lambdanet")
+            self.model.apply(reset_weights)
+            self.optimizer.state.clear()
+        else:
+            print("reusing in-memory lambdanet weights + optimizer state")
 
         # Build dataloaders for lambdanet
         scale, y_min, loaders = get_lambdanet_dataloaders(

@@ -18,6 +18,8 @@ per_device_batch_size_emb: 1024
 optimizer_lr: 1e-4
 print_every: 1
 patience: 6
+reset_lambdanet: True
+scale_lr_factor: 2
 
 # embedding pooling
 pooling_method: mean
