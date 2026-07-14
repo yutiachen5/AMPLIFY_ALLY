@@ -1,10 +1,5 @@
-import os
-import numpy as np
-from tqdm import tqdm
-from typing import List
-from collections import defaultdict
-
 import torch
+from tqdm import tqdm
 
 from ..model import SWE_Pooling
 
@@ -41,7 +36,7 @@ class Embedder:
         embedding = []
 
         with torch.no_grad():
-            for _, x, y, pad_mask in dataloader:
+            for _, x, _, pad_mask in dataloader:
                 x = x.to(self.device)
                 pad_mask = pad_mask.to(self.device)
 

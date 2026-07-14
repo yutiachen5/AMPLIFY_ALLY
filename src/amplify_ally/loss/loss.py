@@ -66,7 +66,6 @@ def get_lagrangian(
     device: torch.device,
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
-    lr_dual: float = 0.1,
     epsilon: float = 2.4,
     **kwargs,
 ) -> torch.Tensor:

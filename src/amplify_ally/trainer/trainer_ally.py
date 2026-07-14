@@ -5,15 +5,12 @@ import sys
 import json
 import signal
 import shutil
-import datetime 
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
-from typing import Tuple, List
 from omegaconf import OmegaConf, DictConfig
 
 import torch
-from accelerate import Accelerator, skip_first_batches
+from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
 
@@ -241,13 +238,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
 
                 # Update lambda value for the next rd
-                lambdas_tmp = lambdas.detach().clone() if torch.is_tensor(lambdas) else np.array(lambdas, copy=True) # actual
                 lambdas, best_reg = lambdanet_trainer.get_lambdas(
-                        rd=rd, 
+                        rd=rd,
                         lambdas=lambdas,
                         flag=flag,
                         embeddings=embeddings,
-                        save_dir=cfg.trainer.dir, 
+                        seed=cfg.seed,
                         **cfg.strategy,
                     ) # overwrite old lambdas with pred lambdas
 
@@ -324,7 +320,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                         device=accelerator.device,
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
-                        lr_dual=dual_lr,
                         **cfg.strategy
                     )
                     accelerator.backward(lagrangian)
@@ -366,7 +361,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     device=accelerator.device,
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
-                    lr_dual=dual_lr,
                     **cfg.strategy
                 )
                 accelerator.backward(lagrangian)

@@ -7,6 +7,7 @@ dual_lr: 0.1
 dual_lr_gamma: 0.9
 dual_lr_stepsize: 500
 n_clusters: 128
+n_init: 20
 n_steps: 8000
 
 # lambdanet training

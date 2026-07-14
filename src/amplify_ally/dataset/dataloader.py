@@ -1,19 +1,15 @@
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 
 from ..tokenizer import ProteinTokenizer
 from .datasets import InMemoryProteinDataset, InMemoryEmbDataset, ProteinGymDataset
 from .data_collator import DataCollatorMLM, ProteinGymCollator
 
-import os
 import gc
-import math
-import random
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
-from sklearn.preprocessing import MinMaxScaler
 
-from typing import List, Callable, Dict
+from typing import Callable, Dict
 from collections import defaultdict
 
 
@@ -31,7 +27,6 @@ def get_mlm_dataloader(
     return_labels: bool,
     num_workers: int,
     per_device_batch_size: int,
-    samples_before_next_set: list | None = None,
     mask_probability: int = 0,
     span_probability: float = 0.0,
     span_max: int = 0,
@@ -59,7 +54,6 @@ def get_mlm_dataloader(
         return_labels (bool): Return the protein labels.
         num_workers (int): Number of workers for the dataloader.
         per_device_batch_size (int): Batch size for each GPU.
-        samples_before_next_set (list | None, optional): Number of samples of each dataset to return before moving
         to the next dataset (interleaving). Defaults to ``None``.
         mask_probability (int, optional): Ratio of tokens that are masked. Defaults to 0.
         span_probability (float, optional): Probability for the span length. Defaults to 0.0.
@@ -74,11 +68,6 @@ def get_mlm_dataloader(
     Returns:
         torch.utils.data.DataLoader
     """
-
-    def seed_worker(worker_id):
-        worker_seed = torch.initial_seed() % 2**32
-        np.random.seed(worker_seed)
-        random.seed(worker_seed)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -115,7 +104,6 @@ def get_mlm_dataloader(
             prefetch_factor=2,
             pin_memory=True,
             persistent_workers=False,
-            worker_init_fn=seed_worker,
             generator=g,
         )
     else:
@@ -128,7 +116,6 @@ def get_mlm_dataloader(
                 prefetch_factor=2,
                 pin_memory=True,
                 persistent_workers=False,
-                worker_init_fn=seed_worker,
                 generator=g,
             )
             for k, v in paths.items()
@@ -152,7 +139,6 @@ def get_lambdanet_dataloaders(
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,
     flag: np.ndarray,
-    device: torch.device,
     batch_size: int,
     val_size: float = 0.2,
     seed: int = 42,
@@ -214,12 +200,11 @@ def update_mlm_dataloader(
     lambdas: torch.Tensor,
     seed: int = 42,
     n_clusters: int = 512,
+    n_init: int = 10,
     per_device_batch_size_kmeans: int = 1024,
     per_device_batch_size: int = 1024,
     num_workers: int = 2,
     epsilon: int = 2,
-    write_to_hard_drive: bool = True,
-    dtype: torch.dtype = torch.float32,
     **kwargs,
 ) -> DataLoader:
     """Update the order of samples in the dataloader according to informativeness and diversity
@@ -228,16 +213,17 @@ def update_mlm_dataloader(
         embeddings (torch.Tensor). Sequence-level representation.
         lambdas (torch.Tensor). Informativeness of each sequence.
         n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
+        n_init (int): Number of KMeans initialization attempts; best is kept by inertia. Defaults to 10.
         seed (int): Random seed. Defaults to 0.
         per_device_batch_size_kmeans (int): Batch size for each GPU when doing clustering.
-        
+
     Returns:
         torch.utils.data.DataLoader
     """
     # shuffle the index list for unconstrained learning, the lambda values do not matter since they are all zeros.
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        updated_idx_order = np.random.permutation(np.arange(len(lambdas)))
+        updated_idx_order = np.random.default_rng(seed).permutation(len(lambdas))
         return updated_idx_order, DataLoader(
             dataset=dataset.update(updated_idx_order),
             batch_size=per_device_batch_size,
@@ -251,15 +237,18 @@ def update_mlm_dataloader(
 
     # fit kmeans for clustering
     kmeans_mdl = MiniBatchKMeans(
-        n_clusters=n_clusters, 
-        random_state=seed, 
-        batch_size=per_device_batch_size_kmeans, 
-        n_init='auto',
+        n_clusters=n_clusters,
+        random_state=seed,
+        batch_size=per_device_batch_size_kmeans,
+        n_init=n_init,
     )
 
     clusters = []
     X = embeddings.detach().to(torch.float32).cpu().numpy()
     clusters = kmeans_mdl.fit_predict(X)
+
+    cluster_sizes = np.bincount(clusters, minlength=n_clusters)
+    print(f"KMeans cluster sizes: min={cluster_sizes.min()}, max={cluster_sizes.max()}, mean={cluster_sizes.mean():.1f}")
 
     del X, embeddings
     gc.collect()

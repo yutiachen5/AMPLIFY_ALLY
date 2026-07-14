@@ -26,7 +26,7 @@ def evaluate(
     model.eval()
     sum_val_loss, num_val_correct, num_val_pred = 0, 0, 0
     with torch.no_grad():
-        for global_id, x, y, pad_mask in dataloader:
+        for _, x, y, pad_mask in dataloader:
             logits = model(x, pad_mask).logits
             val_loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
             num_val_pred += torch.sum(y != -100).item()
@@ -79,7 +79,7 @@ def evaluate_proteingym(
  
     # compute per-assay Spearman and return mean
     results = []
-    for dms_id, score in dataset.assay_scores.items():
+    for _, score in dataset.assay_scores.items():
         rho, _ = spearmanr(score["model_scores"], score["dms_scores"])
         results.append(rho)
  

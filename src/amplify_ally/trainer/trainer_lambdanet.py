@@ -57,7 +57,7 @@ class LambdaNetTrainer:
         self.trained_lambdas = lambdas[self.trained_idx]
 
         # adjust learning rate
-        max_lr = 1e-3  # make this in config later??
+        max_lr = 1e-4  # make this in config later??
         scaled_lr = min(self.base_lr * (self.scale_lr_factor ** (rd - 2)), max_lr)  # rd starts from 2
         for pg in self.optimizer.param_groups:
             pg["lr"] = scaled_lr
@@ -119,7 +119,6 @@ class LambdaNetTrainer:
         rd: int,
         lambdas: torch.Tensor,
         flag: np.ndarray,
-        save_dir: str,
         embeddings: torch.Tensor,
         val_size: float = 0.2,
         seed: int = 42,
@@ -139,7 +138,14 @@ class LambdaNetTrainer:
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
         if reset_lambdanet:
             print("reset weights + optimizer state of lambdanet")
+            # Reinit deterministically 
+            cpu_rng_state = torch.get_rng_state()
+            cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            torch.manual_seed(self.seed + rd)
             self.model.apply(reset_weights)
+            torch.set_rng_state(cpu_rng_state)
+            if cuda_rng_state is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_state)
             self.optimizer.state.clear()
         else:
             print("reusing in-memory lambdanet weights + optimizer state")
@@ -149,7 +155,6 @@ class LambdaNetTrainer:
             embeddings=embeddings,
             lambdas=self.lambdas,
             flag=self.flag,
-            device=self.device,
             batch_size=self.per_device_batch_size,
             val_size=val_size,
             seed=seed,
@@ -201,11 +206,6 @@ class LambdaNetTrainer:
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
-
-        # # Save the regression head, mkdir since this happens at the begining of each rd
-        # save_path = os.path.join(save_dir, f"checkpoint_{rd}")
-        # os.makedirs(save_path, exist_ok=True)
-        # torch.save(best_state, os.path.join(save_path, "lambdanet.pt"))
 
         # Free per-round data
         self.lambdas = None

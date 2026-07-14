@@ -4,11 +4,8 @@ from itertools import islice, zip_longest, repeat, chain
 from torch.utils.data import IterableDataset, get_worker_info, Dataset
 
 import os
-import random
-import hashlib
 import numpy as np
 import pandas as pd
-from typing import List
 
 from ..tokenizer import ProteinTokenizer
 
