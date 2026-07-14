@@ -320,14 +320,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                     # Compute gradient and update dual variables
-                    lambdas_updated = update_dual_variables(
-                        train_loss_seq=train_loss_seq,
-                        lambdas_current=lambdas_current,
-                        lr_dual=dual_lr,
-                        dtype=dtype_reg_head,
-                        **cfg.strategy,
-                    )
-
                     lagrangian, constraint_violations = get_lagrangian(
                         device=accelerator.device,
                         train_loss_seq=train_loss_seq,
@@ -337,7 +329,13 @@ def trainer_ally(cfg: DictConfig) -> None:
                     )
                     accelerator.backward(lagrangian)
 
-
+                    lambdas_updated = update_dual_variables(
+                        train_loss_seq=train_loss_seq,
+                        lambdas_current=lambdas_current,
+                        lr_dual=dual_lr,
+                        dtype=dtype_reg_head,
+                        **cfg.strategy,
+                    )
                     lambdas[global_id] = lambdas_updated.detach().cpu()
 
                     metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
@@ -364,14 +362,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                 # Compute gradient and update dual variables
-                lambdas_updated = update_dual_variables(
-                    train_loss_seq=train_loss_seq,
-                    lambdas_current=lambdas_current,
-                    lr_dual=dual_lr,
-                    dtype=dtype_reg_head,
-                    **cfg.strategy,
-                )
-
                 lagrangian, constraint_violations = get_lagrangian(
                     device=accelerator.device,
                     train_loss_seq=train_loss_seq,
@@ -380,7 +370,14 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy
                 )
                 accelerator.backward(lagrangian)
-
+                
+                lambdas_updated = update_dual_variables(
+                    train_loss_seq=train_loss_seq,
+                    lambdas_current=lambdas_current,
+                    lr_dual=dual_lr,
+                    dtype=dtype_reg_head,
+                    **cfg.strategy,
+                )
                 lambdas[global_id] = lambdas_updated.detach().cpu()
 
                 metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
