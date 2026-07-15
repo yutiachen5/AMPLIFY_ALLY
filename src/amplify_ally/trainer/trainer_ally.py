@@ -296,7 +296,6 @@ def trainer_ally(cfg: DictConfig) -> None:
             # called, and the first call to .backward() outside this context manager will trigger the synchronization (accumulate gradients)
             if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
                 with accelerator.no_sync(model):
-
                     out = model(x, pad_mask) 
                     logits = out.logits
 
@@ -316,14 +315,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                     # Compute gradient and update dual variables
-                    lagrangian, constraint_violations = get_lagrangian(
-                        device=accelerator.device,
-                        train_loss_seq=train_loss_seq,
-                        lambdas_current=lambdas_current,
-                        **cfg.strategy
-                    )
-                    accelerator.backward(lagrangian)
-
                     lambdas_updated = update_dual_variables(
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
@@ -332,6 +323,14 @@ def trainer_ally(cfg: DictConfig) -> None:
                         **cfg.strategy,
                     )
                     lambdas[global_id] = lambdas_updated.detach().cpu()
+
+                    lagrangian, constraint_violations = get_lagrangian(
+                        device=accelerator.device,
+                        train_loss_seq=train_loss_seq,
+                        lambdas_current=lambdas_current,
+                        **cfg.strategy
+                    )
+                    accelerator.backward(lagrangian)
 
                     metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
                     metrics["constraint_violations"] = constraint_violations
@@ -357,14 +356,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
 
                 # Compute gradient and update dual variables
-                lagrangian, constraint_violations = get_lagrangian(
-                    device=accelerator.device,
-                    train_loss_seq=train_loss_seq,
-                    lambdas_current=lambdas_current,
-                    **cfg.strategy
-                )
-                accelerator.backward(lagrangian)
-                
                 lambdas_updated = update_dual_variables(
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
@@ -373,6 +364,14 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy,
                 )
                 lambdas[global_id] = lambdas_updated.detach().cpu()
+
+                lagrangian, constraint_violations = get_lagrangian(
+                    device=accelerator.device,
+                    train_loss_seq=train_loss_seq,
+                    lambdas_current=lambdas_current,
+                    **cfg.strategy
+                )
+                accelerator.backward(lagrangian)
 
                 metrics["lambda_mean"] = lambdas[flag >= 1].mean().item() # log the mean of ALL lambdas with non-zero flags
                 metrics["constraint_violations"] = constraint_violations
@@ -437,7 +436,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
+                        save_aux_state(chk_dir, project_config.iteration-1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                     break
 
         # Log metrics

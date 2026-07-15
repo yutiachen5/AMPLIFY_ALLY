@@ -1,16 +1,15 @@
+import gc
+import numpy as np
+from typing import Callable, Dict
+from collections import defaultdict
+from sklearn.cluster import MiniBatchKMeans
+
 import torch
 from torch.utils.data import DataLoader
 
 from ..tokenizer import ProteinTokenizer
 from .datasets import InMemoryProteinDataset, InMemoryEmbDataset, ProteinGymDataset
 from .data_collator import DataCollatorMLM, ProteinGymCollator
-
-import gc
-import numpy as np
-from sklearn.cluster import MiniBatchKMeans
-
-from typing import Callable, Dict
-from collections import defaultdict
 
 
 def get_mlm_dataloader(
@@ -200,7 +199,6 @@ def update_mlm_dataloader(
     lambdas: torch.Tensor,
     seed: int = 42,
     n_clusters: int = 512,
-    n_init: int = 10,
     per_device_batch_size_kmeans: int = 1024,
     per_device_batch_size: int = 1024,
     num_workers: int = 2,
@@ -213,7 +211,6 @@ def update_mlm_dataloader(
         embeddings (torch.Tensor). Sequence-level representation.
         lambdas (torch.Tensor). Informativeness of each sequence.
         n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
-        n_init (int): Number of KMeans initialization attempts; best is kept by inertia. Defaults to 10.
         seed (int): Random seed. Defaults to 0.
         per_device_batch_size_kmeans (int): Batch size for each GPU when doing clustering.
 
@@ -240,7 +237,7 @@ def update_mlm_dataloader(
         n_clusters=n_clusters,
         random_state=seed,
         batch_size=per_device_batch_size_kmeans,
-        n_init=n_init,
+        n_init='auto',
     )
 
     clusters = []
@@ -340,7 +337,7 @@ def get_proteingym_dataloader(
     dataloader = DataLoader(
         dataset,
         batch_size = batch_size,
-        shuffle = False,        # must stay False — order matters for score accumulation
+        shuffle = False, # must stay False — order matters for score accumulation
         collate_fn = ProteinGymCollator(pad_token_id, pad_to_multiple_of),
         num_workers = 0, # hard-coded since it is on main process only
         pin_memory = False,
