@@ -150,8 +150,8 @@ accelerate launch \
 	dataset.validation.paths.pdb=<path/to/scop_dev.csv> \
 	dataset.validation.paths.oas=<path/to/oas_dev.csv> \
 	trainer.dir=logs/AMPLIFY_350M \
-	trainer.train.per_device_batch_size=128 \
-	trainer.validation.per_device_batch_size=128 \
+	trainer.train.batch_size=128 \
+	trainer.validation.batch_size=128 \
 	trainer.gradient_accumulation_steps=16
 ```
 
@@ -217,8 +217,8 @@ srun \
 	trainer.dir=logs/AMPLIFY_120M \
 	trainer.max_steps=1000000 \
 	scheduler.final_step=900000 \
-	trainer.train.per_device_batch_size=256 \
-	trainer.validation.per_device_batch_size=256 \
+	trainer.train.batch_size=256 \
+	trainer.validation.batch_size=256 \
 	trainer.gradient_accumulation_steps=2'
 ```
 

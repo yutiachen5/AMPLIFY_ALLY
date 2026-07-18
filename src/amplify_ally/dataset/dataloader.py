@@ -25,7 +25,7 @@ def get_mlm_dataloader(
     random_truncate: bool,
     return_labels: bool,
     num_workers: int,
-    per_device_batch_size: int,
+    batch_size: int,
     mask_probability: int = 0,
     span_probability: float = 0.0,
     span_max: int = 0,
@@ -52,7 +52,7 @@ def get_mlm_dataloader(
         random_truncate (bool): Truncate the sequence to a random subsequence of if longer than truncate.
         return_labels (bool): Return the protein labels.
         num_workers (int): Number of workers for the dataloader.
-        per_device_batch_size (int): Batch size for each GPU.
+        batch_size (int): Batch size.
         to the next dataset (interleaving). Defaults to ``None``.
         mask_probability (int, optional): Ratio of tokens that are masked. Defaults to 0.
         span_probability (float, optional): Probability for the span length. Defaults to 0.0.
@@ -97,7 +97,7 @@ def get_mlm_dataloader(
     if merge:
         return DataLoader(
             InMemoryProteinDataset(paths.values()),
-            batch_size=per_device_batch_size,
+            batch_size=batch_size,
             collate_fn=collator,
             num_workers=num_workers,
             prefetch_factor=2,
@@ -109,7 +109,7 @@ def get_mlm_dataloader(
         return {
             k: DataLoader(
                 InMemoryProteinDataset([v]),
-                batch_size=per_device_batch_size,
+                batch_size=batch_size,
                 collate_fn=collator,
                 num_workers=num_workers,
                 prefetch_factor=2,
@@ -123,12 +123,12 @@ def get_mlm_dataloader(
 def get_emb_dataloader(
     dataset: torch.utils.data.Dataset, 
     collator: Callable,
-    per_device_batch_size_emb: int,
+    batch_size_emb: int,
     **kwargs,
 ) -> DataLoader:
     return DataLoader(
         dataset,
-        batch_size=per_device_batch_size_emb,
+        batch_size=batch_size_emb,
         shuffle=False,
         collate_fn=collator,
         num_workers=0,
@@ -199,8 +199,8 @@ def update_mlm_dataloader(
     lambdas: torch.Tensor,
     seed: int = 42,
     n_clusters: int = 512,
-    per_device_batch_size_kmeans: int = 1024,
-    per_device_batch_size: int = 1024,
+    batch_size_kmeans: int = 1024,
+    batch_size: int = 1024,
     num_workers: int = 2,
     epsilon: int = 2,
     **kwargs,
@@ -212,7 +212,7 @@ def update_mlm_dataloader(
         lambdas (torch.Tensor). Informativeness of each sequence.
         n_clusters (int): Number of KMeans clusters. Defaults to 4_000.
         seed (int): Random seed. Defaults to 0.
-        per_device_batch_size_kmeans (int): Batch size for each GPU when doing clustering.
+        batch_size_kmeans (int): Batch size when doing clustering.
 
     Returns:
         torch.utils.data.DataLoader
@@ -223,7 +223,7 @@ def update_mlm_dataloader(
         updated_idx_order = np.random.default_rng(seed).permutation(len(lambdas))
         return updated_idx_order, DataLoader(
             dataset=dataset.update(updated_idx_order),
-            batch_size=per_device_batch_size,
+            batch_size=batch_size,
             shuffle=False,
             collate_fn=collator,
             num_workers=num_workers,
@@ -236,7 +236,7 @@ def update_mlm_dataloader(
     kmeans_mdl = MiniBatchKMeans(
         n_clusters=n_clusters,
         random_state=seed,
-        batch_size=per_device_batch_size_kmeans,
+        batch_size=batch_size_kmeans,
         n_init='auto',
     )
 
@@ -280,7 +280,7 @@ def update_mlm_dataloader(
     
     return updated_idx_order, DataLoader(
         dataset=dataset.update(updated_idx_order),
-        batch_size=per_device_batch_size,
+        batch_size=batch_size,
         shuffle=False,
         collate_fn=collator,
         num_workers=num_workers,

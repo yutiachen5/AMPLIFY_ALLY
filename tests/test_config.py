@@ -489,7 +489,7 @@ def test__config_validator__raises_error_from_trainer_if_config_misspecified(
                 "random_truncate": True,
                 "mask_probability": -0.15,  # should fail
                 "num_workers": 4,
-                "per_device_batch_size": 16,
+                "batch_size": 16,
                 "label_smoothing": 0,
                 "weights": {
                     "A": 1.0,
@@ -511,7 +511,7 @@ def test__config_validator__raises_error_from_trainer_if_config_misspecified(
                 "random_truncate": True,
                 "mask_probability": 1.15,  # should fail
                 "num_workers": 4,
-                "per_device_batch_size": 64,
+                "batch_size": 64,
                 "label_smoothing": 0,
                 "weights": {
                     "A": 1.0,
@@ -540,7 +540,7 @@ def test__config_validator__raises_error_from_trainer_if_config_misspecified(
                     "pad_to_multiple_of": 8,
                     "random_truncate": False,
                     "num_workers": 0,
-                    "per_device_batch_size": 64,
+                    "batch_size": 64,
                 }
             },
             {

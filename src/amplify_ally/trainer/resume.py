@@ -50,7 +50,7 @@ def restore_from_checkpoint(
 
     dataloader = accelerator.prepare_data_loader(DataLoader(
         dataset=dataset.update(idx_order),
-        batch_size=trainer_cfg.train.per_device_batch_size,
+        batch_size=trainer_cfg.train.batch_size,
         shuffle=False,
         collate_fn=collator,
         num_workers=trainer_cfg.train.num_workers,

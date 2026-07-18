@@ -23,14 +23,14 @@ class LambdaNetTrainer:
         device: torch.device,
         seed: int,
         accelerator: Accelerator,
-        per_device_batch_size_lambdanet: int,
+        batch_size_lambdanet: int,
         scale_lr_factor: int = 2,
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ):
         self.seed = seed
         self.accelerator = accelerator
-        self.per_device_batch_size = per_device_batch_size_lambdanet
+        self.batch_size = batch_size_lambdanet
         self.scale_lr_factor = scale_lr_factor
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
@@ -155,7 +155,7 @@ class LambdaNetTrainer:
             embeddings=embeddings,
             lambdas=self.lambdas,
             flag=self.flag,
-            batch_size=self.per_device_batch_size,
+            batch_size=self.batch_size,
             val_size=val_size,
             seed=seed,
             num_workers=num_workers,
