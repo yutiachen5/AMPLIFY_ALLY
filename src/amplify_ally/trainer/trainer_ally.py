@@ -21,7 +21,7 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..utils import save_aux_state, get_wandb_run_id
+from ..utils import save_aux_state
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
@@ -68,26 +68,27 @@ def trainer_ally(cfg: DictConfig) -> None:
         project_config=project_config,
     )
 
-    # Initialise the wandb run and pass wandb parameters
+    # Initialise the wandb run
     os.makedirs(cfg.wandb.dir, exist_ok=True)
-    run_id = get_wandb_run_id(dir=cfg.wandb.dir, resume=cfg.trainer.resume, is_main_process=accelerator.is_main_process)
+    wandb_init_kwargs = {
+        "name": cfg.wandb.name,
+        "entity": cfg.wandb.entity,
+        "config": OmegaConf.to_container(cfg)
+        | {"distributed_type": accelerator.distributed_type}
+        | {"mixed_precision": accelerator.mixed_precision},
+        "tags": cfg.wandb.tags,
+        "dir": cfg.wandb.dir,
+        "mode": cfg.wandb.mode,
+        "anonymous": "allow",
+    }
+    # If a wandb run ID was given (e.g. resuming after an HPC preemption), log
+    # into that existing run instead of starting a new one.
+    if cfg.trainer.wandb_run_id:
+        wandb_init_kwargs["id"] = cfg.trainer.wandb_run_id
+        wandb_init_kwargs["resume"] = "allow"
     accelerator.init_trackers(
         project_name=cfg.wandb.project,
-        init_kwargs={
-            "wandb": {
-                "name": cfg.wandb.name, # this should be the same as old job if resuming
-                "entity": cfg.wandb.entity,
-                "config": OmegaConf.to_container(cfg)
-                | {"distributed_type": accelerator.distributed_type}
-                | {"mixed_precision": accelerator.mixed_precision},
-                "tags": cfg.wandb.tags,
-                "dir": cfg.wandb.dir,
-                "mode": cfg.wandb.mode,
-                "anonymous": "allow",
-                "resume": "allow" if cfg.trainer.resume else "never",
-                "id": run_id, # the run to resume tracking on wandb
-            }
-        },
+        init_kwargs={"wandb": wandb_init_kwargs},
     )
 
     # Set the seed

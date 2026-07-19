@@ -1,5 +1,4 @@
 import os
-import wandb
 import numpy as np
 from typing import Tuple
 
@@ -49,21 +48,3 @@ def load_aux_state(
     optimizer_reg_state = torch.load(optimizer_path, map_location="cpu") if os.path.exists(optimizer_path) else None
     print(f"[resume] Loaded checkpoint state from {folder}")
     return lambdas, flag, idx_order, best_reg, optimizer_reg_state
-
-def get_wandb_run_id(dir: str, resume: bool, is_main_process: bool) -> str:
-    run_id_path = os.path.join(dir, "wandb_run_id.txt")
-
-    if resume and os.path.exists(run_id_path):
-        with open(run_id_path) as f:
-            run_id = f.read().strip()
-        if is_main_process:
-            print(f"[wandb] Resuming run {run_id}")
-    else:
-        run_id = wandb.util.generate_id()
-        if is_main_process:
-            os.makedirs(dir, exist_ok=True)
-            with open(run_id_path, "w") as f:
-                f.write(run_id)
-            print(f"[wandb] New run {run_id}")
-
-    return run_id

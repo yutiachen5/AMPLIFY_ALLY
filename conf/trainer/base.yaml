@@ -1,6 +1,7 @@
 dir: outputs
 resume: False
 resume_it: null # round to resume from when resume=True; required if resume=True
+wandb_run_id: null # optional: set to an existing wandb run ID to resume logging into that run or leave null to start a new run
 eval_steps: 100
 pg_eval_steps: 1000
 max_checkpoints: 100

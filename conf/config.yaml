@@ -22,7 +22,7 @@ hydra:
 
 wandb:
   name: null
-  project: amplify
+  project: amplify_ally
   entity: tecchk-cyt-duke-university
   tags: []
   dir: outputs/${now:%Y-%m-%d-%H-%M-%S}/wandb
