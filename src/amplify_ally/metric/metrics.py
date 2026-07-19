@@ -46,8 +46,6 @@ class Metrics(defaultdict):
         self["num_samples"] = self["num_samples"] + metrics_agg["local_num_samples"]
         self["num_tokens"] = self["num_tokens"] + metrics_agg["local_num_tokens"]
         self["num_masked_tokens"] = self["num_masked_tokens"] + metrics_agg["local_num_train_pred"]
-        if pg_scc is not None:
-            self["proteingym_scc"] = pg_scc
 
         # Build the metrics to log
         metrics_log = dict()
@@ -85,7 +83,7 @@ class Metrics(defaultdict):
                 self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
 
         if pg_scc is not None:
-            metrics_log["proteingym_scc"] = self["proteingym_scc"]
+            metrics_log["proteingym_scc"] = pg_scc
             if self._is_better("pg", pg_scc):
                 self._save_best("pg", pg_scc, accelerator, model)
 
