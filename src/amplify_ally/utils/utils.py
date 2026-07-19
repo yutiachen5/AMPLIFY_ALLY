@@ -13,6 +13,7 @@ def save_aux_state(
     flag: np.ndarray,
     idx_order: np.ndarray,
     best_reg: dict | None = None,
+    optimizer_reg_state: dict | None = None,
 ) -> None:
     folder = os.path.join(chk_dir, f"checkpoint_{it}")
     os.makedirs(folder, exist_ok=True)
@@ -21,27 +22,33 @@ def save_aux_state(
     np.save(os.path.join(folder, "idx_order.npy"), np.asarray(idx_order, dtype=np.int64))
     if best_reg is not None:
         torch.save(best_reg, os.path.join(folder, "lambdanet.pt"))
+    if optimizer_reg_state is not None:
+        torch.save(optimizer_reg_state, os.path.join(folder, "lambdanet_optimizer.pt"))
 
 def load_aux_state(
     chk_dir: str,
     it: int,
     dtype: torch.dtype,
-) -> Tuple[torch.Tensor, np.ndarray, np.ndarray]:
+) -> Tuple[torch.Tensor, np.ndarray, np.ndarray, dict | None, dict | None]:
     folder = os.path.join(chk_dir, f"checkpoint_{it}")
     lambdas_path = os.path.join(folder, "lambdas.npy")
     flag_path = os.path.join(folder, "flag.npy")
     idx_order_path = os.path.join(folder, "idx_order.npy")
+    lambdanet_path = os.path.join(folder, "lambdanet.pt")
+    optimizer_path = os.path.join(folder, "lambdanet_optimizer.pt")
 
     missing = [p for p in [lambdas_path, flag_path, idx_order_path] if not os.path.exists(p)]
     if missing:
         print(f"[resume] WARNING: checkpoint files not found: {missing}. Starting from scratch.")
-        return None, None, None
+        return None, None, None, None, None
 
     lambdas = torch.from_numpy(np.load(lambdas_path)).to(dtype)
     flag = np.load(flag_path)
     idx_order = np.load(idx_order_path)
+    best_reg = torch.load(lambdanet_path, map_location="cpu") if os.path.exists(lambdanet_path) else None
+    optimizer_reg_state = torch.load(optimizer_path, map_location="cpu") if os.path.exists(optimizer_path) else None
     print(f"[resume] Loaded checkpoint state from {folder}")
-    return lambdas, flag, idx_order
+    return lambdas, flag, idx_order, best_reg, optimizer_reg_state
 
 def get_wandb_run_id(dir: str, resume: bool, is_main_process: bool) -> str:
     run_id_path = os.path.join(dir, "wandb_run_id.txt")

@@ -1,11 +1,6 @@
-import os
-import numpy as np
 from tqdm import tqdm
-from typing import List, Optional
-from collections import defaultdict
 
 import torch
-from accelerate import Accelerator
 
 from ..model import SWE_Pooling
 
@@ -33,64 +28,29 @@ class Embedder:
         self,
         model: torch.nn.Module,
         dataloader: torch.utils.data.DataLoader,
-        accelerator: Optional[Accelerator] = None,
     ) -> torch.Tensor:
-        """Extract sequence-level embeddings for every sample in dataloader.
+        """Extract sequence-level embeddings for every sample in dataloader."""
 
-        In multi-GPU mode, each process handles its data shard. Embeddings are
-        gathered from all processes and sorted by global_id so the returned tensor
-        is always in dataset order (index i → row i).
-        """
-        pbar = tqdm(
-            desc="Extracting embeddings",
-            unit="batch",
-            total=len(dataloader),
-            disable=(accelerator is not None and not accelerator.is_main_process),
-        )
+        pbar = tqdm(desc="Extracting embeddings", unit="batch", total=len(dataloader))
         model.eval()
 
-        local_ids = []
-        local_embs = []
+        embedding = []
 
         with torch.no_grad():
-            for global_id, x, y, pad_mask in dataloader:
+            for _, x, _, pad_mask in dataloader:
                 x = x.to(self.device)
                 pad_mask = pad_mask.to(self.device)
 
                 emb = model(x, pad_mask, output_hidden_states=True).hidden_states[-1]  # [B, L, D]
                 pooled_emb = self._pooling(emb=emb, pad_mask=pad_mask)
 
-                local_ids.append(global_id.cpu())
-                local_embs.append(pooled_emb.cpu())
+                embedding.append(pooled_emb)
                 pbar.update(1)
 
         model.train()
         pbar.close()
 
-        all_ids = torch.cat(local_ids, dim=0)    # [N_local]
-        all_embs = torch.cat(local_embs, dim=0)  # [N_local, D]
-
-        if accelerator is not None and accelerator.num_processes > 1:
-            # Gather from all GPUs; accelerator.gather returns [N_total] after concat
-            all_ids = accelerator.gather(all_ids.to(self.device)).cpu()
-            all_embs = accelerator.gather(all_embs.to(self.device)).cpu()
-
-            # Deduplicate padding that accelerate adds when len(dataset) % num_processes != 0
-            # and restore original dataset order.
-            sort_idx = torch.argsort(all_ids, stable=True)
-            # keep only the first occurrence of each id (duplicates come from padding)
-            seen = set()
-            keep = []
-            for i in sort_idx.tolist():
-                gid = all_ids[i].item()
-                if gid not in seen:
-                    seen.add(gid)
-                    keep.append(i)
-            keep = torch.tensor(keep, dtype=torch.long)
-            all_embs = all_embs[keep]
-            # all_embs is now sorted by global_id with no duplicates
-
-        return all_embs.to(dtype=self.dtype)
+        return torch.cat(embedding, dim=0).to(dtype=self.dtype)
 
     def _pooling(
         self,

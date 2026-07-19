@@ -10,10 +10,8 @@ from tqdm import tqdm
 from omegaconf import OmegaConf, DictConfig
 
 import torch
-import torch.distributed as dist
-from torch.utils.data import DataLoader
 from accelerate import Accelerator
-from accelerate.utils import DistributedType, ProjectConfiguration, set_seed, broadcast_object_list
+from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
 
 from ..config import config_schema, ConfigError
@@ -23,10 +21,11 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..utils import save_aux_state, load_aux_state, get_wandb_run_id
+from ..utils import save_aux_state, get_wandb_run_id
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
+from .resume import restore_from_checkpoint
 
 
 def trainer_ally(cfg: DictConfig) -> None:
@@ -48,6 +47,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     elif os.path.exists(chk_dir):
         # This regular expression was taken from accelerator.load_state()
         it = max(int(re.findall(r"[\/]?([0-9]+)(?=[^\/]*$)", folder)[0]) for folder in os.listdir(chk_dir))
+        if cfg.trainer.resume_it is not None:
+            it = cfg.trainer.resume_it
         # Remove empty checkpoint folders
         while len(os.listdir(os.path.join(chk_dir, f"checkpoint_{it}"))) == 0:
             shutil.rmtree(os.path.join(chk_dir, f"checkpoint_{it}"), ignore_errors=True)
@@ -153,8 +154,12 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Constrained learning or not
     constrained = (cfg.strategy.epsilon != 1000)
 
+    # Resume checking
+    if cfg.trainer.resume and cfg.trainer.resume_it is None:
+        raise ValueError("trainer.resume_it must be set when trainer.resume=True")
+
     # Initialize parameters for constrained learning
-    rd_offset = 0
+    rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
     lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
@@ -190,25 +195,13 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Resume block
     if cfg.trainer.resume and it > 0:
-        accelerator.load_state(os.path.join(chk_dir, f"checkpoint_{it}")) # restore the emb mdl
-        lambdas, flag, idx_order = load_aux_state(chk_dir, it, dtype_pad_mask)
-        rd_path = os.path.join(cfg.trainer.dir, "rd_completed.txt")
-        if os.path.exists(rd_path):
-            rd_offset = int(open(rd_path).read().strip())
-            accelerator.print(f"[resume] Resuming from round {rd_offset + 1}")
-
-        # Rebuild the dataloader using the idx order from previous checkpoint
-        train_dataloader = DataLoader(
-                dataset=dataset.update(idx_order),
-                batch_size=cfg.trainer.train.per_device_batch_size,
-                shuffle=False,
-                collate_fn=collator,
-                num_workers=cfg.trainer.train.num_workers,
-                prefetch_factor=2,
-                pin_memory=True,
-                persistent_workers=False,
-            )
-        dataloader = accelerator.prepare_data_loader(train_dataloader)
+        rs = restore_from_checkpoint(
+            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps,
+            accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
+            dtype=dtype_pad_mask, reg_dtype=dtype_reg_head, dataset=dataset, collator=collator, metrics=metrics,
+        )
+        lambdas, flag, idx_order, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.best_reg
+        dataloader = rs.dataloader
         
     # Get loss functions
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
@@ -241,51 +234,22 @@ def trainer_ally(cfg: DictConfig) -> None:
         if rd != 1:
             if constrained:
                 # Extract embeddings after the first round and replace the old emb with new one in later rds
-                embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader, accelerator=accelerator)
+                embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
 
-                # Sync lambdas/slacks/flag across GPUs before single-process work.
-                # Each GPU updated non-overlapping indices, so an all-reduce SUM merges them.
-                if accelerator.num_processes > 1:
-                    lambdas_g = (lambdas if torch.is_tensor(lambdas) else torch.as_tensor(lambdas)).to(accelerator.device)
-                    flag_g = torch.as_tensor(flag, dtype=torch.float32).to(accelerator.device)
-                    dist.all_reduce(lambdas_g, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(flag_g, op=dist.ReduceOp.SUM)
-                    lambdas = lambdas_g.cpu()
-                    flag = flag_g.cpu().numpy()
+                lambdas, best_reg = lambdanet_trainer.get_lambdas(
+                    rd=rd,
+                    lambdas=lambdas,
+                    flag=flag,
+                    embeddings=embeddings,
+                    **cfg.strategy,
+                )
 
-                # LambdaNet training runs on main process only (small network, full embeddings needed)
-                if accelerator.is_main_process:
-                    lambdas, best_reg = lambdanet_trainer.get_lambdas(
-                        rd=rd,
-                        lambdas=lambdas,
-                        flag=flag,
-                        embeddings=embeddings,
-                        save_dir=cfg.trainer.dir,
-                        **cfg.strategy,
-                    )
-                else:
-                    lambdas = None
-                    best_reg = None
-
-                # Broadcast lambdas only; best_reg stays on main process for checkpointing
-                lambdas_list = [lambdas]
-                broadcast_object_list(lambdas_list, from_process=0)
-                lambdas = lambdas_list[0]
-
-                # Clustering runs on main process only, then idx_order is broadcast
-                if accelerator.is_main_process:
-                    idx_order = compute_sample_order(
-                        embeddings=embeddings,
-                        lambdas=lambdas,
-                        seed=cfg.seed,
-                        **cfg.strategy,
-                    )
-                else:
-                    idx_order = None
-
-                idx_order_list = [idx_order]
-                broadcast_object_list(idx_order_list, from_process=0)
-                idx_order = idx_order_list[0]
+                idx_order = compute_sample_order(
+                    embeddings=embeddings,
+                    lambdas=lambdas,
+                    seed=cfg.seed,
+                    **cfg.strategy,
+                )
 
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
@@ -299,20 +263,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
-                # Unconstrained: compute order on main process, broadcast
-                if accelerator.is_main_process:
-                    idx_order = compute_sample_order(
-                        embeddings=torch.zeros(len(dataset)),
-                        lambdas=lambdas,
-                        seed=cfg.seed,
-                        **cfg.strategy,
-                    )
-                else:
-                    idx_order = None
-
-                idx_order_list = [idx_order]
-                broadcast_object_list(idx_order_list, from_process=0)
-                idx_order = idx_order_list[0]
+                idx_order = compute_sample_order(
+                    embeddings=torch.zeros(len(dataset)),
+                    lambdas=lambdas,
+                    seed=cfg.seed,
+                    **cfg.strategy,
+                )
 
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
@@ -375,7 +331,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                         device=accelerator.device,
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
-                        lr_dual=dual_lr,
                         **cfg.strategy
                     )
                     accelerator.backward(lagrangian)
@@ -418,7 +373,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                     device=accelerator.device,
                     train_loss_seq=train_loss_seq,
                     lambdas_current=lambdas_current,
-                    lr_dual=dual_lr,
                     **cfg.strategy
                 )
                 accelerator.backward(lagrangian)
@@ -490,7 +444,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                     accelerator.wait_for_everyone()
                     print(f"Done on rank {accelerator.process_index}")
                     sys.exit(0)
@@ -499,9 +453,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg)
-                        with open(os.path.join(cfg.trainer.dir, "rd_completed.txt"), "w") as f:
-                            f.write(str(rd))
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                     break
 
         # Log metrics

@@ -3,8 +3,6 @@ import torch
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
 
-from typing import Tuple
-
 from ..tokenizer import ProteinTokenizer
 
 
@@ -68,7 +66,6 @@ def get_lagrangian(
     device: torch.device,
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
-    lr_dual: float = 0.1,
     epsilon: float = 2.4,
     **kwargs,
 ) -> torch.Tensor:

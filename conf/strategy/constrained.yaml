@@ -12,12 +12,12 @@ n_steps: 8000
 # lambdanet training
 val_size: 0.2 
 max_epochs: 40 
-per_device_batch_size_lambdanet: 512
-per_device_batch_size_kmeans: 512
-per_device_batch_size_emb: 1024
+batch_size_lambdanet: 512
+batch_size_kmeans: 512
+batch_size_emb: 1024
 optimizer_lr: 1e-4
 print_every: 1
-resume: True # whether to load lambdanet from previous checkpoint or not
+reset_lambdanet: False # if False, load lambdanet from previous round's checkpoint instead of resetting weights
 patience: 6
 scale_lr_factor: 2
 

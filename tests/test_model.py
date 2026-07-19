@@ -110,7 +110,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
                 "random_truncate": True,
                 "mask_probability": 0.15,
                 "num_workers": 4,
-                "per_device_batch_size": 16,
+                "batch_size": 16,
                 "label_smoothing": 0,
                 "weights": {
                     "A": 1.0,
@@ -132,7 +132,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
                 "random_truncate": True,
                 "mask_probability": 0.15,
                 "num_workers": 4,
-                "per_device_batch_size": 64,
+                "batch_size": 64,
                 "label_smoothing": 0,
                 "weights": {
                     "A": 1.0,
@@ -161,7 +161,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
                     "pad_to_multiple_of": 8,
                     "random_truncate": False,
                     "num_workers": 0,
-                    "per_device_batch_size": 64,
+                    "batch_size": 64,
                 }
             },
             {
@@ -330,7 +330,7 @@ def test__esm__saves_a_checkpoint_from_which_training_resumes(
                 "random_truncate": True,
                 "mask_probability": 0.15,
                 "num_workers": 4,
-                "per_device_batch_size": 16,
+                "batch_size": 16,
                 "label_smoothing": 0,
                 "weights": {
                     "A": 1.0,
@@ -352,7 +352,7 @@ def test__esm__saves_a_checkpoint_from_which_training_resumes(
                 "random_truncate": True,
                 "mask_probability": 0.15,
                 "num_workers": 4,
-                "per_device_batch_size": 64,
+                "batch_size": 64,
                 "label_smoothing": 0,
                 "weights": {
                     "A": 1.0,
@@ -381,7 +381,7 @@ def test__esm__saves_a_checkpoint_from_which_training_resumes(
                     "pad_to_multiple_of": 8,
                     "random_truncate": False,
                     "num_workers": 0,
-                    "per_device_batch_size": 64,
+                    "batch_size": 64,
                 }
             },
             {

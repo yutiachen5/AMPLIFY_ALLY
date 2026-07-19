@@ -80,7 +80,7 @@ trainer:
     random_truncate: true
     mask_probability: 0.15
     num_workers: 1
-    per_device_batch_size: 128
+    batch_size: 128
     label_smoothing: 0
     weights:
       L: 1
@@ -111,7 +111,7 @@ trainer:
     random_truncate: true
     mask_probability: 0.15
     num_workers: 1
-    per_device_batch_size: 128
+    batch_size: 128
     label_smoothing: 0
     weights:
       L: 1
@@ -145,7 +145,7 @@ analysis:
     pad_to_multiple_of: 8
     random_truncate: false
     num_workers: 1
-    per_device_batch_size: 64
+    batch_size: 64
   umap_embedding_matrix:
     n_neighbors: 20
     min_dist: 0.1

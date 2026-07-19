@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from accelerate import Accelerator
 
@@ -24,14 +23,14 @@ class LambdaNetTrainer:
         device: torch.device,
         seed: int,
         accelerator: Accelerator,
-        per_device_batch_size_lambdanet: int,
+        batch_size_lambdanet: int,
         scale_lr_factor: int,
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ):
         self.seed = seed
         self.accelerator = accelerator
-        self.per_device_batch_size = per_device_batch_size_lambdanet
+        self.batch_size = batch_size_lambdanet
         self.scale_lr_factor = scale_lr_factor
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
@@ -120,7 +119,6 @@ class LambdaNetTrainer:
         rd: int,
         lambdas: torch.Tensor,
         flag: np.ndarray,
-        save_dir: str,
         embeddings: torch.Tensor,
         val_size: float = 0.2,
         seed: int = 42,
@@ -128,9 +126,7 @@ class LambdaNetTrainer:
         print_every: int = 10,
         patience: int = 3,
         num_workers: int = 4,
-        has_emb: bool = False,
-        resume: bool = False,
-        shard_size: int = 1_000_000,
+        reset_lambdanet: bool = False,
         **kwargs,
     ) -> torch.Tensor:
 
@@ -140,21 +136,18 @@ class LambdaNetTrainer:
 
         # Refresh per-round state and scale LR
         self._setup_round(rd=rd, lambdas=lambdas, flag=flag)
-        if resume:
-            reg_path = os.path.join(save_dir, "checkpoints", f"checkpoint_{rd-1}", "lambdanet.pt")
-            print(f"loading lambdanet from: {reg_path}")
-            self.model.load_state_dict(torch.load(reg_path, map_location=self.device))
-        else:
+        if reset_lambdanet:
             print("reset weights of lambdanet")
             self.model.apply(reset_weights)
+        else:
+            print("reusing in-memory lambdanet weights + optimizer state")
         
         # Build dataloaders for lambdanet
         scale, y_min, loaders = get_lambdanet_dataloaders(
             embeddings=embeddings,
             lambdas=self.lambdas,
             flag=self.flag,
-            device=self.device,
-            batch_size=self.per_device_batch_size,
+            batch_size=self.batch_size,
             val_size=val_size,
             seed=seed,
             num_workers=num_workers,
@@ -205,11 +198,6 @@ class LambdaNetTrainer:
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
-
-        # # Save the regression head, mkdir since this happens at the begining of each rd
-        # save_path = os.path.join(save_dir, f"checkpoint_{rd}")
-        # os.makedirs(save_path, exist_ok=True)
-        # torch.save(best_state, os.path.join(save_path, "lambdanet.pt"))
 
         # Free per-round data
         self.lambdas = None

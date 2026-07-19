@@ -12,7 +12,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_path", type=str, help="")
     parser.add_argument("--tokenizer_path", type=str, help="")
     parser.add_argument("--device", type=str, default="cuda", help="")
-    parser.add_argument("--per_device_batch_size", type=int, default=8, help="")
+    parser.add_argument("--batch_size", type=int, default=8, help="")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="")
     parser.add_argument("--resume", action="store_true", help="")
     # Dataset
@@ -61,8 +61,8 @@ if __name__ == "__main__":
     trainer_args = TrainingArguments(
         evaluation_strategy="steps",
         output_dir=os.path.join(args.output_dir, args.run_name),
-        per_device_train_batch_size=args.per_device_batch_size,
-        per_device_eval_batch_size=args.per_device_batch_size,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=4e-4,
         adam_beta1=0.9,
