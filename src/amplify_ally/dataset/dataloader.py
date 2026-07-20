@@ -14,6 +14,12 @@ from typing import Callable, Dict
 from collections import defaultdict
 
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 def get_mlm_dataloader(
     vocab_path: str,
     pad_token_id: int,
@@ -69,11 +75,6 @@ def get_mlm_dataloader(
     Returns:
         torch.utils.data.DataLoader
     """
-
-    def seed_worker(worker_id):
-        worker_seed = torch.initial_seed() % 2**32
-        np.random.seed(worker_seed)
-        random.seed(worker_seed)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -266,6 +267,7 @@ def update_mlm_dataloader(
     idx_order: np.ndarray,
     batch_size: int = 1024,
     num_workers: int = 2,
+    seed: int = 42,
     **kwargs,
 ) -> DataLoader:
     """Build a DataLoader from a pre-computed index ordering.
@@ -273,6 +275,9 @@ def update_mlm_dataloader(
     Returns:
         (idx_order, torch.utils.data.DataLoader)
     """
+    g = torch.Generator()
+    g.manual_seed(seed)
+
     return idx_order, DataLoader(
         dataset=dataset.update(idx_order),
         batch_size=batch_size,
@@ -282,6 +287,8 @@ def update_mlm_dataloader(
         prefetch_factor=2,
         pin_memory=True,
         persistent_workers=False,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
 
 def get_proteingym_dataloader(

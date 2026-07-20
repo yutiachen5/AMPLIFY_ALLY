@@ -256,6 +256,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     dataset=dataset,
                     collator=collator,
                     idx_order=idx_order,
+                    seed=cfg.seed,
                     **cfg.strategy,
                     **cfg.trainer.train,
                 )
@@ -275,6 +276,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     dataset=dataset,
                     collator=collator,
                     idx_order=idx_order,
+                    seed=cfg.seed,
                     **cfg.strategy,
                     **cfg.trainer.train,
                 )
