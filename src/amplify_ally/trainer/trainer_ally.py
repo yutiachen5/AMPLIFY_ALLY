@@ -249,6 +249,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     embeddings=embeddings,
                     lambdas=lambdas,
                     seed=cfg.seed,
+                    rd=rd,
                     **cfg.strategy,
                 )
 
@@ -269,6 +270,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     embeddings=torch.zeros(len(dataset)),
                     lambdas=lambdas,
                     seed=cfg.seed,
+                    rd=rd,
                     **cfg.strategy,
                 )
 
