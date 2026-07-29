@@ -456,11 +456,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                         print(f"Done on rank {accelerator.process_index}")
                         sys.exit(0)
 
-                    # Save emb mdl and aux stuff from the main process
+                    # Save emb mdl and aux stuff from the main process once the round (all n_iter reps) is finished
                     if metrics["num_steps"] % cfg.strategy.n_steps == 0:
-                        accelerator.save_state()
-                        if accelerator.is_main_process:
-                            save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
+                        if iter_idx == cfg.strategy.n_iter - 1:
+                            accelerator.save_state()
+                            if accelerator.is_main_process:
+                                save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                         break
 
         # Log metrics
