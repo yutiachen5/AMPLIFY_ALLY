@@ -2,6 +2,7 @@ _name_: ally
 
 # basic setting
 max_rds: 5
+n_iter: 1 # number of times to repeat n_steps of training before lambdanet training + loader update
 epsilon: 2.25 # set epsilon to 1000 for unconstrained learning
 dual_lr: 0.1
 dual_lr_gamma: 0.9
