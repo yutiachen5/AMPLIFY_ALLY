@@ -104,7 +104,7 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize embedding model, regression head, optimizer, scheduler, and SWE pooling if specified
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
-    reg, best_reg = LambdaNet(input_dim=cfg.model.hidden_size), None
+    reg, best_reg = LambdaNet(input_dim=cfg.model.hidden_size, init_method=cfg.strategy.lambdanet_init_method), None
     optimizer = get_optimizer(model, **cfg.optimizer)
     optimizer_reg = get_optimizer(reg, **cfg.strategy)
     scheduler = get_scheduler(optimizer, **cfg.scheduler)

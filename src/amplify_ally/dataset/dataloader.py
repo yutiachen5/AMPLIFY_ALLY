@@ -220,8 +220,9 @@ def compute_sample_order(
     """
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        # Fold in `rd` so the permutation differs each round instead of repeating cfg.seed.
-        rng = np.random.default_rng(seed + rd)
+        # rd starts at 2 (this branch is skipped for rd == 1); offset so the first
+        # unconstrained round still uses the base seed, then varies each round after.
+        rng = np.random.default_rng(seed + rd - 2)
         return rng.permutation(np.arange(len(lambdas)))
 
     kmeans_mdl = MiniBatchKMeans(

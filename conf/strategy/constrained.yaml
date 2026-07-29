@@ -18,6 +18,7 @@ batch_size_emb: 1024
 optimizer_lr: 1e-4
 print_every: 1
 reset_lambdanet: False # if False, load lambdanet from previous round's checkpoint instead of resetting weights
+lambdanet_init_method: null # weight init for lambdanet's Linear layers at construction; null = pytorch default, or "kaiming"/"xavier"
 patience: 6
 scale_lr_factor: 2
 
