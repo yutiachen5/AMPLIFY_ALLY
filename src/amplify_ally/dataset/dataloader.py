@@ -206,7 +206,7 @@ def compute_sample_order(
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,
     seed: int = 42,
-    rd: int = 0,
+    rd: int = 2,
     n_clusters: int = 512,
     batch_size_kmeans: int = 1024,
     epsilon: int = 2,
@@ -220,8 +220,7 @@ def compute_sample_order(
     """
     if epsilon == 1000:
         print("Unconstrained learning - randomize idx order for the next rd")
-        # rd starts at 2 (this branch is skipped for rd == 1); offset so the first
-        # unconstrained round still uses the base seed, then varies each round after.
+        # Fold in `rd` so the permutation differs each round instead of repeating cfg.seed.
         rng = np.random.default_rng(seed + rd - 2)
         return rng.permutation(np.arange(len(lambdas)))
 
