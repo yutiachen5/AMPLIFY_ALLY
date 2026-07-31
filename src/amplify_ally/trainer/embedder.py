@@ -28,16 +28,22 @@ class Embedder:
         self,
         model: torch.nn.Module,
         dataloader: torch.utils.data.DataLoader,
-    ) -> torch.Tensor:
-        """Extract sequence-level embeddings for every sample in dataloader."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Extract sequence-level embeddings for every sample in dataloader.
+
+        Returns:
+            (global_ids, embeddings) — global_ids records the true dataset index of
+            each row, since dataloader iteration order need not match global index
+            order (e.g. dataset.idx_order may have been permuted by a prior round).
+        """
 
         pbar = tqdm(desc="Extracting embeddings", unit="batch", total=len(dataloader))
         model.eval()
 
-        embedding = []
+        global_ids, embedding = [], []
 
         with torch.no_grad():
-            for _, x, _, pad_mask in dataloader:
+            for global_id, x, _, pad_mask in dataloader:
                 x = x.to(self.device)
                 pad_mask = pad_mask.to(self.device)
 
@@ -45,12 +51,13 @@ class Embedder:
                 pooled_emb = self._pooling(emb=emb, pad_mask=pad_mask)
 
                 embedding.append(pooled_emb)
+                global_ids.append(global_id)
                 pbar.update(1)
 
         model.train()
         pbar.close()
 
-        return torch.cat(embedding, dim=0).to(dtype=self.dtype)
+        return torch.cat(global_ids, dim=0), torch.cat(embedding, dim=0).to(dtype=self.dtype)
 
     def _pooling(
         self,
