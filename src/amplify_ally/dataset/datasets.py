@@ -61,25 +61,46 @@ class IterableProteinDataset(IterableDataset):
 class InMemoryProteinDataset(Dataset):
     def __init__(self, paths: dict, **kwargs):
         """
-        Protein dataset that loads all data into memory.
+        Protein dataset that loads sources into memory one at a time.
 
         Args:
-            paths (list): Paths to the CSV files to read.
+            paths (dict): Name -> path to the CSV files to read, in the order sources
+                should be concatenated (round rd's cumulative pool is the contiguous
+                prefix of the first rd sources). Row counts for every source are
+                scanned upfront (cheap, no sequence data retained), but sequence data
+                itself is only loaded into memory on demand via `ensure_loaded_through`
+                — only the first source is loaded at construction time.
         """
         self.paths = paths
+        self._source_paths: List[Tuple[str, str]] = list(paths.items())  # [(name, path), ...]
         self.samples: List[Tuple[str, str]] = []
+        self.source_names: List[str] = [name for name, _ in self._source_paths]
 
-        # Load all sequences into memory
-        for path in self.paths:
+        # Cheap row count per source (no sequence data retained) so cumulative
+        # prefix boundaries are known upfront, before later sources are loaded.
+        self.source_lengths: List[int] = [
+            sum(1 for _ in open(path, "r")) - 1  # -1 for header
+            for _, path in self._source_paths
+        ]
+
+        self._next_source_idx = 0
+        self.ensure_loaded_through(1)
+        self.idx_order = np.arange(len(self.samples))
+
+    def ensure_loaded_through(self, n_sources: int) -> None:
+        """Load sources[0:n_sources] into `self.samples`, loading any not-yet-read
+        source's file content. No-op for sources already loaded."""
+        while self._next_source_idx < n_sources:
+            _, path = self._source_paths[self._next_source_idx]
             with open(path, "r") as f:
                 next(f)  # skip header
                 for line in f:
                     row = line.strip().split(",")
                     self.samples.append((row[0], row[1]))  # (record_id, sequence)
-        self.idx_order = np.arange(len(self.samples))
-                    
+            self._next_source_idx += 1
+
     def __len__(self):
-        return len(self.samples)
+        return len(self.idx_order)
 
     def update(self, idx_order):
         self.idx_order = idx_order

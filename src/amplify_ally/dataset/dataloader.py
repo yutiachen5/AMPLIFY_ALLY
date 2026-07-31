@@ -104,7 +104,7 @@ def get_mlm_dataloader(
 
     if merge:
         return DataLoader(
-            InMemoryProteinDataset(paths.values()),
+            InMemoryProteinDataset(paths),
             batch_size=batch_size,
             collate_fn=collator,
             num_workers=num_workers,
@@ -117,7 +117,7 @@ def get_mlm_dataloader(
     else:
         return {
             k: DataLoader(
-                InMemoryProteinDataset([v]),
+                InMemoryProteinDataset({k: v}),
                 batch_size=batch_size,
                 collate_fn=collator,
                 num_workers=num_workers,

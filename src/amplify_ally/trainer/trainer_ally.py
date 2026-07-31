@@ -37,6 +37,13 @@ def trainer_ally(cfg: DictConfig) -> None:
     config_check = config_schema.validate(cfg)
     if not config_check.is_ok():
         raise ConfigError(config_check)
+
+    num_sources = len(cfg.dataset.train.paths)
+    if cfg.strategy.max_rds != num_sources:
+        raise ValueError(
+            f"cfg.strategy.max_rds ({cfg.strategy.max_rds}) must equal the number of dataset "
+            f"sources in cfg.dataset.train.paths ({num_sources}) — round rd introduces source rd-1."
+        )
     it = 0
 
     chk_dir = os.path.join(cfg.trainer.dir, "checkpoints")
@@ -144,6 +151,10 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
     dataset = train_dataloader.dataset
     collator = train_dataloader.collate_fn
+    # Cumulative prefix boundaries: round rd's pool is sources[0:rd], a contiguous
+    # prefix of the concatenated dataset (sources are loaded/ordered as configured).
+    cumulative_ends = np.cumsum(dataset.source_lengths)
+    total_len = int(cumulative_ends[-1])
     emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
         **cfg.dataset.proteingym,
@@ -161,10 +172,11 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Initialize parameters for constrained learning
     rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
-    lambdas = torch.zeros(len(dataset), requires_grad=False, dtype=dtype_pad_mask)
-    flag = np.zeros(len(dataset))
+    lambdas = torch.zeros(total_len, requires_grad=False, dtype=dtype_pad_mask)
+    flag = np.zeros(total_len)
     dual_lr = cfg.strategy.dual_lr
-    idx_order = np.arange(len(dataset))
+    idx_order = np.arange(int(cumulative_ends[0]))
+    dataset.update(idx_order)  # round 1: restrict pool to source 0 (the base set)
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -196,6 +208,10 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Resume block
     if cfg.trainer.resume and it > 0:
+        # The checkpointed idx_order covers sources[0:rd_offset]; make sure their
+        # sequence data is actually loaded before dataset.update(idx_order) inside
+        # restore_from_checkpoint indexes into dataset.samples.
+        dataset.ensure_loaded_through(rd_offset)
         rs = restore_from_checkpoint(
             chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps,
             accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
@@ -233,21 +249,35 @@ def trainer_ally(cfg: DictConfig) -> None:
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
         if rd != 1:
-            if constrained:
-                # Extract embeddings after the first round and replace the old emb with new one in later rds
-                embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+            # Introduce source[rd-1]: cumulative pool through this round is the
+            # contiguous prefix sources[0:rd] of the concatenated dataset.
+            dataset.ensure_loaded_through(rd)
+            cumulative_end = int(cumulative_ends[rd - 1])
+            accelerator.print(
+                f"Introducing source '{dataset.source_names[rd - 1]}' "
+                f"({dataset.source_lengths[rd - 1]} samples) — cumulative pool size: {cumulative_end}"
+            )
 
-                lambdas, best_reg = lambdanet_trainer.get_lambdas(
+            if constrained:
+                # Extract embeddings after the first round and replace the old emb with new one in later rds.
+                # Restrict emb_dataloader to exactly the cumulative pool (not not-yet-introduced sources).
+                dataset.update(np.arange(cumulative_end))
+                raw_ids, raw_embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                embeddings = torch.zeros(cumulative_end, raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
+                embeddings[raw_ids] = raw_embeddings
+
+                lambdas_local, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
-                    lambdas=lambdas,
-                    flag=flag,
+                    lambdas=lambdas[:cumulative_end],
+                    flag=flag[:cumulative_end],
                     embeddings=embeddings,
                     **cfg.strategy,
                 )
+                lambdas[:cumulative_end] = lambdas_local
 
                 idx_order = compute_sample_order(
                     embeddings=embeddings,
-                    lambdas=lambdas,
+                    lambdas=lambdas_local,
                     seed=cfg.seed,
                     rd=rd,
                     **cfg.strategy,
@@ -267,8 +297,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                     torch.cuda.empty_cache()
             else:
                 idx_order = compute_sample_order(
-                    embeddings=torch.zeros(len(dataset)),
-                    lambdas=lambdas,
+                    embeddings=torch.zeros(cumulative_end),
+                    lambdas=lambdas[:cumulative_end],
                     seed=cfg.seed,
                     rd=rd,
                     **cfg.strategy,

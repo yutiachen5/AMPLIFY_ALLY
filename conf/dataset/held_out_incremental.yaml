@@ -1,0 +1,22 @@
+# Template for the incremental multi-dataset experiment design: round rd introduces
+# the rd-th entry of train.paths (round 1 = base set only). The number of entries
+# here MUST equal strategy.max_rds, or trainer_ally will raise a ValueError at startup.
+# Fill in the placeholder paths below with your actual base + held-out set CSVs.
+train:
+  samples_before_next_set: null
+  paths:
+    base: uniref/mila/held_out_base.csv
+    held_out_1: uniref/mila/held_out_1.csv
+    held_out_2: uniref/mila/held_out_2.csv
+    held_out_3: uniref/mila/held_out_3.csv
+    held_out_4: uniref/mila/held_out_4.csv
+
+
+validation:
+  samples_before_next_set: null
+  paths: {uniprot: uniref/mila/uniprot_dev.csv, pdb: uniref/mila/scop_dev.csv, oas: uniref/mila/oas_dev.csv}
+
+proteingym:
+  DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv
+  DMS_data_dir: downstream_tasks/ProteinGym/DMS_ProteinGym_substitutions
+  excluded_indices: [73, 124, 181, 182] # exclude long assays during pretraining
