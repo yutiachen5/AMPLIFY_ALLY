@@ -157,6 +157,7 @@ jobs/
 # specified file types
 *.txt
 *.sh
+*.sbatch
 
 # Jupyter Notebooks
 scripts/viz.ipynb
