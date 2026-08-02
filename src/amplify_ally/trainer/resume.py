@@ -23,7 +23,7 @@ def restore_from_checkpoint(
     chk_dir: str,
     it: int,
     trainer_cfg: DictConfig,
-    n_steps: int,
+    num_steps: int,
     accelerator: Accelerator,
     reg: torch.nn.Module,
     optimizer_reg: torch.optim.Optimizer,
@@ -45,7 +45,7 @@ def restore_from_checkpoint(
         optimizer_reg.load_state_dict(optimizer_reg_state)
         accelerator.print(f"[resume] Loaded LambdaNet optimizer state from checkpoint_{it}")
 
-    metrics["num_steps"] = n_steps * trainer_cfg.resume_it
+    metrics["num_steps"] = num_steps
     accelerator.print(f"[resume] resume_it={trainer_cfg.resume_it}: num_steps={metrics['num_steps']}, starting from round {trainer_cfg.resume_it + 1}")
 
     dataloader = accelerator.prepare_data_loader(DataLoader(

@@ -28,6 +28,12 @@ from .embedder import Embedder
 from .resume import restore_from_checkpoint
 
 
+def _n_steps_for_round(base_n_steps: int, rd: int, cumulative_ends: np.ndarray) -> int:
+    """Scale round rd's step budget by how much the cumulative pool has grown vs round 1,
+    so every round trains on roughly the same fraction of its (growing) pool."""
+    return max(1, round(base_n_steps * cumulative_ends[rd - 1] / cumulative_ends[0]))
+
+
 def trainer_ally(cfg: DictConfig) -> None:
     """Entrypoint for training a model with the given configuraiton.
 
@@ -154,6 +160,12 @@ def trainer_ally(cfg: DictConfig) -> None:
     # prefix of the concatenated dataset (sources are loaded/ordered as configured).
     cumulative_ends = np.cumsum(dataset.source_lengths)
     total_len = int(cumulative_ends[-1])
+    # Per-round step budget, scaled so every round covers roughly the same fraction
+    # of its (growing) cumulative pool instead of a shrinking one under a fixed n_steps.
+    round_n_steps = [
+        _n_steps_for_round(cfg.strategy.n_steps, rd, cumulative_ends)
+        for rd in range(1, cfg.strategy.max_rds + 1)
+    ]
     emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
         **cfg.dataset.proteingym,
@@ -211,8 +223,9 @@ def trainer_ally(cfg: DictConfig) -> None:
         # sequence data is actually loaded before dataset.update(idx_order) inside
         # restore_from_checkpoint indexes into dataset.samples.
         dataset.ensure_loaded_through(rd_offset)
+        resumed_num_steps = sum(round_n_steps[:rd_offset]) * cfg.strategy.n_iter
         rs = restore_from_checkpoint(
-            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps,
+            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, num_steps=resumed_num_steps,
             accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
             dtype=dtype_pad_mask, reg_dtype=dtype_reg_head, dataset=dataset, collator=collator, metrics=metrics,
         )
@@ -239,12 +252,17 @@ def trainer_ally(cfg: DictConfig) -> None:
         desc="Train",
         unit="step",
         initial=metrics["num_steps"],
-        total=cfg.strategy.n_steps * cfg.strategy.n_iter * cfg.strategy.max_rds,
+        total=sum(round_n_steps) * cfg.strategy.n_iter,
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
     for rd in range(rd_offset + 1, cfg.strategy.max_rds + 1):
-        accelerator.print(f"\n{'=' * 50}\n{f'ROUND {rd}/{cfg.strategy.max_rds}':^50}\n{'=' * 50}")
+        this_round_n_steps = round_n_steps[rd - 1]
+        round_start_steps = metrics["num_steps"]
+        accelerator.print(
+            f"\n{'=' * 50}\n{f'ROUND {rd}/{cfg.strategy.max_rds}':^50}\n{'=' * 50}"
+            f"\nRound {rd} step budget: {this_round_n_steps} (scaled from base n_steps={cfg.strategy.n_steps})"
+        )
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
         if rd != 1:
@@ -486,7 +504,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         sys.exit(0)
 
                     # Save emb mdl and aux stuff from the main process once the round (all n_iter reps) is finished
-                    if metrics["num_steps"] % cfg.strategy.n_steps == 0:
+                    if metrics["num_steps"] - round_start_steps == this_round_n_steps * (iter_idx + 1):
                         if iter_idx == cfg.strategy.n_iter - 1:
                             accelerator.save_state()
                             if accelerator.is_main_process:
