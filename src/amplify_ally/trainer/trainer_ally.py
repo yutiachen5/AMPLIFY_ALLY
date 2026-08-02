@@ -86,7 +86,6 @@ def trainer_ally(cfg: DictConfig) -> None:
         "tags": cfg.wandb.tags,
         "dir": cfg.wandb.dir,
         "mode": cfg.wandb.mode,
-        "anonymous": "allow",
     }
     # If a wandb run ID was given (e.g. resuming after an HPC preemption), log
     # into that existing run instead of starting a new one.
