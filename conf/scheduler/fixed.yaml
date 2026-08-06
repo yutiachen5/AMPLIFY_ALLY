@@ -1,0 +1,5 @@
+_name_: Fixed
+# final_ratio/final_step are unused by "Fixed" (kept only because get_scheduler requires them).
+final_ratio: 1.0
+final_step: 0
+warmup_steps: 0

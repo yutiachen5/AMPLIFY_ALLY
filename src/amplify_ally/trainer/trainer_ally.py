@@ -292,6 +292,18 @@ def trainer_ally(cfg: DictConfig) -> None:
                 )
                 lambdas[:cumulative_end] = lambdas_local
 
+                # Snapshot the freshly-computed, never-trained-on predictions before
+                # round rd's training can overwrite any of them, so a later round's
+                # empirical outcome can be checked against what was predicted here
+                # (validating LambdaNet's ranking quality, not just its scale).
+                if accelerator.is_main_process:
+                    pred_ids = np.nonzero(flag[:cumulative_end] < 1)[0]
+                    np.save(os.path.join(chk_dir, f"pred_snapshot_rd{rd}_ids.npy"), pred_ids)
+                    np.save(
+                        os.path.join(chk_dir, f"pred_snapshot_rd{rd}_values.npy"),
+                        lambdas_local[pred_ids].numpy(),
+                    )
+
                 idx_order = compute_sample_order(
                     embeddings=embeddings,
                     lambdas=lambdas_local,

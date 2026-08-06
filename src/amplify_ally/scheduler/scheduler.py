@@ -16,8 +16,9 @@ def learning_rate_fn(
 
     Args:
         current_step (int): Current optimizer step.
-        algorithm (str): Name of the algorithm. Only "LinearDecay", "LinearDecayWarmRestart", "CosineDecay",
-        and "CosineDecayWarmRestart" are supported.
+        algorithm (str): Name of the algorithm. Only "Fixed", "LinearDecay", "LinearDecayWarmRestart", "CosineDecay",
+        and "CosineDecayWarmRestart" are supported. "Fixed" holds the learning rate constant (after any warmup)
+        and ignores final_step/final_ratio/warm_restart_steps.
         warmup_steps (int): Number of warmup steps (over which to linearly increase the learning rate from 0 to the peak
         learning rate).
         final_step (int): Number of decay steps (over which to decay the learning rate from the peak learning rate to
@@ -30,6 +31,8 @@ def learning_rate_fn(
     """
     if current_step < warmup_steps:
         return float(current_step) / float(warmup_steps)
+    elif "Fixed" in algorithm:
+        return 1.0
     elif current_step < final_step:
         steps_remaining = final_step - current_step
         steps_after_warmup = current_step - warmup_steps
@@ -75,7 +78,7 @@ def get_scheduler(
 
     Args:
         optimizer (torch.optim.Optimizer): Optimizer.
-        _name_ (str): Name of the algorithm. Only "LinearDecay", "LinearDecayWarmRestart", "CosineDecay",
+        _name_ (str): Name of the algorithm. Only "Fixed", "LinearDecay", "LinearDecayWarmRestart", "CosineDecay",
         and "CosineDecayWarmRestart" are supported.
         warmup_steps (int): Number of warmup steps (over which to linearly increase the learning rate from 0 to the peak
         learning rate).
