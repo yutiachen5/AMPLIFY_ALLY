@@ -301,7 +301,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     np.save(os.path.join(chk_dir, f"pred_snapshot_rd{rd}_ids.npy"), pred_ids)
                     np.save(
                         os.path.join(chk_dir, f"pred_snapshot_rd{rd}_values.npy"),
-                        lambdas_local[pred_ids].numpy(),
+                        lambdas_local[pred_ids].detach().cpu().to(torch.float32).numpy(),
                     )
 
                 idx_order = compute_sample_order(
