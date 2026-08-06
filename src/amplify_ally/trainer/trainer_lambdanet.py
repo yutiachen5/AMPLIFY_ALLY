@@ -110,14 +110,6 @@ class LambdaNetTrainer:
         n = self.trained_idx.shape[0] + self.untrained_idx.shape[0]
         full_lambdas = torch.zeros(n, dtype=self.dtype)
         full_lambdas[self.trained_idx] = self.trained_lambdas
-
-        # z-score scaling to make sure predicted and empirical lambdas are on the same scale
-        pred_std, pred_mean = torch.std_mean(pred_lambdas)
-        emp_std, emp_mean = torch.std_mean(self.trained_lambdas)
-        if pred_std > 0 and emp_std > 0:
-            pred_lambdas = (pred_lambdas - pred_mean) / pred_std * emp_std + emp_mean
-        pred_lambdas = pred_lambdas.clamp(min=0)
-
         full_lambdas[self.untrained_idx] = pred_lambdas
 
         return full_lambdas
