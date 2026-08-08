@@ -28,12 +28,6 @@ from .embedder import Embedder
 from .resume import restore_from_checkpoint
 
 
-def _n_steps_for_round(base_n_steps: int, rd: int, cumulative_ends: np.ndarray) -> int:
-    """Scale round rd's step budget by how much the cumulative pool has grown vs round 1,
-    so every round trains on roughly the same fraction of its (growing) pool."""
-    return max(1, round(base_n_steps * cumulative_ends[rd - 1] / cumulative_ends[0]))
-
-
 def trainer_ally(cfg: DictConfig) -> None:
     """Entrypoint for training a model with the given configuraiton.
 
@@ -160,12 +154,10 @@ def trainer_ally(cfg: DictConfig) -> None:
     # prefix of the concatenated dataset (sources are loaded/ordered as configured).
     cumulative_ends = np.cumsum(dataset.source_lengths)
     total_len = int(cumulative_ends[-1])
-    # Per-round step budget, scaled so every round covers roughly the same fraction
-    # of its (growing) cumulative pool instead of a shrinking one under a fixed n_steps.
-    round_n_steps = [
-        _n_steps_for_round(cfg.strategy.n_steps, rd, cumulative_ends)
-        for rd in range(1, cfg.strategy.max_rds + 1)
-    ]
+    # Fixed step budget per round: each round now trains only on its own
+    # newly-introduced held-out set rather than a growing cumulative pool,
+    # so there's no cumulative size to scale against.
+    round_n_steps = [cfg.strategy.n_steps for _ in range(1, cfg.strategy.max_rds + 1)]
     emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
         **cfg.dataset.proteingym,
@@ -261,15 +253,19 @@ def trainer_ally(cfg: DictConfig) -> None:
         round_start_steps = metrics["num_steps"]
         accelerator.print(
             f"\n{'=' * 50}\n{f'ROUND {rd}/{cfg.strategy.max_rds}':^50}\n{'=' * 50}"
-            f"\nRound {rd} step budget: {this_round_n_steps} (scaled from base n_steps={cfg.strategy.n_steps})"
+            f"\nRound {rd} step budget: {this_round_n_steps}"
         )
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
         if rd != 1:
             # Introduce source[rd-1]: cumulative pool through this round is the
-            # contiguous prefix sources[0:rd] of the concatenated dataset.
+            # contiguous prefix sources[0:rd] of the concatenated dataset, used only
+            # to fit LambdaNet on previously-trained samples. Training itself this
+            # round is restricted to the newly-introduced slice [new_start:cumulative_end)
+            # so the ranking never mixes new held-out samples with old ones.
             dataset.ensure_loaded_through(rd)
             cumulative_end = int(cumulative_ends[rd - 1])
+            new_start = int(cumulative_ends[rd - 2])
             accelerator.print(
                 f"Introducing source '{dataset.source_names[rd - 1]}' "
                 f"({dataset.source_lengths[rd - 1]} samples) — cumulative pool size: {cumulative_end}"
@@ -283,6 +279,8 @@ def trainer_ally(cfg: DictConfig) -> None:
                 embeddings = torch.zeros(cumulative_end, raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
                 embeddings[raw_ids] = raw_embeddings
 
+                # Fit LambdaNet on all previously-trained samples (flag >= 1) and
+                # predict lambdas for the newly-introduced held-out set.
                 lambdas_local, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
                     lambdas=lambdas[:cumulative_end],
@@ -292,25 +290,17 @@ def trainer_ally(cfg: DictConfig) -> None:
                 )
                 lambdas[:cumulative_end] = lambdas_local
 
-                # Snapshot the freshly-computed, never-trained-on predictions before
-                # round rd's training can overwrite any of them, so a later round's
-                # empirical outcome can be checked against what was predicted here
-                # (validating LambdaNet's ranking quality, not just its scale).
-                if accelerator.is_main_process:
-                    pred_ids = np.nonzero(flag[:cumulative_end] < 1)[0]
-                    np.save(os.path.join(chk_dir, f"pred_snapshot_rd{rd}_ids.npy"), pred_ids)
-                    np.save(
-                        os.path.join(chk_dir, f"pred_snapshot_rd{rd}_values.npy"),
-                        lambdas_local[pred_ids].detach().cpu().to(torch.float32).numpy(),
-                    )
-
-                idx_order = compute_sample_order(
-                    embeddings=embeddings,
-                    lambdas=lambdas_local,
+                # Rank only the newly-introduced held-out samples among themselves —
+                # this round trains exclusively on this slice, never mixed with the
+                # already-trained samples from earlier rounds.
+                idx_order_local = compute_sample_order(
+                    embeddings=embeddings[new_start:cumulative_end],
+                    lambdas=lambdas_local[new_start:cumulative_end],
                     seed=cfg.seed,
                     rd=rd,
                     **cfg.strategy,
                 )
+                idx_order = idx_order_local + new_start
 
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
@@ -325,13 +315,16 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
-                idx_order = compute_sample_order(
-                    embeddings=torch.zeros(cumulative_end),
-                    lambdas=lambdas[:cumulative_end],
+                # Unconstrained learning still ranks (here: randomizes) only the
+                # newly-introduced held-out slice, not the full cumulative pool.
+                idx_order_local = compute_sample_order(
+                    embeddings=torch.zeros(cumulative_end - new_start),
+                    lambdas=lambdas[new_start:cumulative_end],
                     seed=cfg.seed,
                     rd=rd,
                     **cfg.strategy,
                 )
+                idx_order = idx_order_local + new_start
 
                 idx_order, dataloader = update_mlm_dataloader(
                     dataset=dataset,
