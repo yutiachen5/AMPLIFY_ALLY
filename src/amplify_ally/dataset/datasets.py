@@ -1,103 +1,64 @@
-import torch
-from typing import Tuple, Iterator, List
-from itertools import islice, zip_longest, repeat, chain
-from torch.utils.data import IterableDataset, get_worker_info, Dataset
-
 import os
-import random
-import hashlib
 import numpy as np
 import pandas as pd
 from typing import List
 
+import torch
+from typing import Tuple, List
+from torch.utils.data import Dataset
+
 from ..tokenizer import ProteinTokenizer
 
 
-class IterableProteinDataset(IterableDataset):
-    def __init__(self, paths: list, samples_before_next_set: list | None):
-        """An iterable dataset that reads protein sequences from a file.
-
-        Args:
-            paths (list): Paths to the CSV files to read.
-            samples_before_next_set (list | None): Number of samples of each dataset to return before moving to the
-            next dataset (interleaving).
-        """
-        self.paths = paths
-        self.samples_per_set = samples_before_next_set if samples_before_next_set is not None else [1] * len(paths)
-
-    def parse_file(self) -> str:
-        worker_info = get_worker_info()
-        step = 1 if worker_info is None else worker_info.num_workers
-        offset = 0 if worker_info is None else worker_info.id
-
-        files, iterator = [], []
-        for path, n in zip(self.paths, self.samples_per_set):
-            # Open the file
-            file = open(path, "r")
-            # Skip header
-            next(file)
-            # Add the file to the list of files to close them at the end
-            files.append(file)
-            # Add the file iterator to the list of iterators n times
-            iterator.extend(repeat(file, n))
-
-        # Interleave the iterators and pad with None
-        iterator = chain.from_iterable(zip_longest(*iterator, fillvalue=None))
-
-        # Iterate through the datasets
-        for row in islice(iterator, offset, None, step):
-            if row is not None:
-                # Assumes (record_id,sequence)
-                yield row.strip().split(",")
-
-        # Closing the files
-        for file in files:
-            file.close()
-
-    def __iter__(self) -> Iterator[Tuple[str, str]]:
-        return self.parse_file()
-
-
 class InMemoryProteinDataset(Dataset):
-    def __init__(self, paths: dict, **kwargs):
+    def __init__(self, paths: dict, max_rows_base_set: int | None = None, **kwargs):
         """
-        Protein dataset that loads sources into memory one at a time.
+        Protein dataset that loads heldout or base set into memory one at a time, keeping at
+        most two sets resident: the current round's pool and the one right
+        before it. Later rounds never look further back than that, 
+        so anything older is evicted as soon as a new set loads.
 
         Args:
-            paths (dict): Name -> path to the CSV files to read, in the order sources
-                should be concatenated (round rd's cumulative pool is the contiguous
-                prefix of the first rd sources). Row counts for every source are
-                scanned upfront (cheap, no sequence data retained), but sequence data
-                itself is only loaded into memory on demand via `ensure_loaded_through`
-                — only the first source is loaded at construction time.
+            paths (dict): Name -> path to the CSV files to read.
+            max_rows_base_set (int | None): Cap on how many rows of the base set to load. 
         """
-        self.paths = paths
-        self._source_paths: List[Tuple[str, str]] = list(paths.items())  # [(name, path), ...]
-        self.samples: List[Tuple[str, str]] = []
-        self.source_names: List[str] = [name for name, _ in self._source_paths]
+        self._set_paths: List[Tuple[str, str]] = list(paths.items())  # [(name, path), ...]
+        self.samples: dict[int, Tuple[str, str]] = {}
 
-        # Cheap row count per source (no sequence data retained) so cumulative
-        # prefix boundaries are known upfront, before later sources are loaded.
-        self.source_lengths: List[int] = [
+        self.set_lengths: List[int] = [
             sum(1 for _ in open(path, "r")) - 1  # -1 for header
-            for _, path in self._source_paths
+            for _, path in self._set_paths
         ]
+        self._cumulative_ends = np.cumsum(self.set_lengths)  # global idx where each set ends
+        self._max_rows_base_set = max_rows_base_set
 
-        self._next_source_idx = 0
+        self._next_set_idx = 0
+        self._loaded_from_set_idx = 0  # oldest set index still resident in memory
         self.ensure_loaded_through(1)
         self.idx_order = np.arange(len(self.samples))
 
-    def ensure_loaded_through(self, n_sources: int) -> None:
-        """Load sources[0:n_sources] into `self.samples`, loading any not-yet-read
-        source's file content. No-op for sources already loaded."""
-        while self._next_source_idx < n_sources:
-            _, path = self._source_paths[self._next_source_idx]
+    def ensure_loaded_through(self, n_sets: int) -> None:
+        """Load sets into memory but retains only the two most recently loaded sets in self.samples."""
+        while self._next_set_idx < n_sets:
+            start = 0 if self._next_set_idx == 0 else int(self._cumulative_ends[self._next_set_idx - 1])
+            row_cap = self._max_rows_base_set if self._next_set_idx == 0 else None
+            _, path = self._set_paths[self._next_set_idx]
             with open(path, "r") as f:
                 next(f)  # skip header
-                for line in f:
+                for offset, line in enumerate(f):  # offset: row counter within each set 
+                    if row_cap is not None and offset >= row_cap:
+                        break
                     row = line.strip().split(",")
-                    self.samples.append((row[0], row[1]))  # (record_id, sequence)
-            self._next_source_idx += 1
+                    self.samples[start + offset] = (row[0], row[1])  # (record_id, sequence)
+            self._next_set_idx += 1
+
+            # Delete the samples from older set 
+            keep_from_set = max(0, self._next_set_idx - 2)
+            if keep_from_set > self._loaded_from_set_idx:
+                evict_before = int(self._cumulative_ends[keep_from_set - 1])
+                for k in [k for k in self.samples if k < evict_before]:
+                    del self.samples[k]
+                self._loaded_from_set_idx = keep_from_set
 
     def __len__(self):
         return len(self.idx_order)
@@ -107,7 +68,7 @@ class InMemoryProteinDataset(Dataset):
         return self
 
     def __getitem__(self, i: int) -> Tuple[str, str]:
-        global_idx = self.idx_order[i]
+        global_idx = int(self.idx_order[i])
         sample = self.samples[global_idx]
         return global_idx, sample[0], sample[1] # (record_id, sequence)
 

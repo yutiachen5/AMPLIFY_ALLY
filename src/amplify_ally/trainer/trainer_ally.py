@@ -138,6 +138,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         return_labels=False,
         dtype=dtype_pad_mask,
         seed=cfg.seed,
+        max_rows_base_set=cfg.strategy.n_steps*cfg.trainer.gradient_accumulation_steps*cfg.trainer.train.batch_size, # Number of samples in base set training    
     )
     eval_dataloaders = get_mlm_dataloader(
         **cfg.tokenizer,
@@ -178,7 +179,9 @@ def trainer_ally(cfg: DictConfig) -> None:
     lambdas = torch.zeros(total_len, requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(total_len)
     dual_lr = cfg.strategy.dual_lr
-    idx_order = np.arange(int(cumulative_ends[0]))
+    # dataset.samples for source 0 was already capped to max_rows_base_set rows
+    # at construction time, so idx_order must match what's actually loaded.
+    idx_order = np.arange(len(dataset.samples))
     dataset.update(idx_order)  # round 1: restrict pool to source 0 (the base set)
 
     # Initialzie lambdanet trainer
@@ -228,8 +231,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
     loss_fn_mean = get_loss(accelerator.device, "mean", **cfg.tokenizer, **cfg.trainer.validation, dtype=dtype_class_weight)
 
-    # Flag-based SIGTERM handler: set a flag and checkpoint at a safe point after the batch,
-    # so all ranks participate in the collective save_state together.
+    # Flag-based SIGTERM handler: set a flag and checkpoint at a safe point after the batch, so all ranks participate in the collective save_state together.
     _sigterm_received = False
 
     def handler(signum, _):
@@ -258,11 +260,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
         if rd != 1:
-            # Introduce source[rd-1]: cumulative pool through this round is the
-            # contiguous prefix sources[0:rd] of the concatenated dataset, used only
-            # to fit LambdaNet on previously-trained samples. Training itself this
-            # round is restricted to the newly-introduced slice [new_start:cumulative_end)
-            # so the ranking never mixes new held-out samples with old ones.
             dataset.ensure_loaded_through(rd)
             cumulative_end = int(cumulative_ends[rd - 1])
             new_start = int(cumulative_ends[rd - 2])
@@ -272,30 +269,30 @@ def trainer_ally(cfg: DictConfig) -> None:
             )
 
             if constrained:
-                # Extract embeddings after the first round and replace the old emb with new one in later rds.
-                # Restrict emb_dataloader to exactly the cumulative pool (not not-yet-introduced sources).
-                dataset.update(np.arange(cumulative_end))
-                raw_ids, raw_embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
-                embeddings = torch.zeros(cumulative_end, raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
-                embeddings[raw_ids] = raw_embeddings
+                # Fit LambdaNet on only the immediately-preceding round's pool
+                fit_start = int(cumulative_ends[rd - 3]) if rd >= 3 else 0
+                local_new_start = new_start - fit_start
 
-                # Fit LambdaNet on all previously-trained samples (flag >= 1) and
-                # predict lambdas for the newly-introduced held-out set.
+                # Extract embeddings and restrict emb_dataloader to exactly [fit_start:cumulative_end) (previous pool + new pool).
+                dataset.update(np.arange(fit_start, cumulative_end))
+                raw_ids, raw_embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                embeddings = torch.zeros(cumulative_end - fit_start, raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
+                embeddings[raw_ids - fit_start] = raw_embeddings
+
+                # Fit LambdaNet on the previous pool's trained samples (flag >= 1) and predict lambdas for the newly-introduced held-out set.
                 lambdas_local, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
-                    lambdas=lambdas[:cumulative_end],
-                    flag=flag[:cumulative_end],
+                    lambdas=lambdas[fit_start:cumulative_end],
+                    flag=flag[fit_start:cumulative_end],
                     embeddings=embeddings,
                     **cfg.strategy,
                 )
-                lambdas[:cumulative_end] = lambdas_local
+                lambdas[fit_start:cumulative_end] = lambdas_local
 
-                # Rank only the newly-introduced held-out samples among themselves —
-                # this round trains exclusively on this slice, never mixed with the
-                # already-trained samples from earlier rounds.
+                # Rank only the newly-introduced held-out samples among themselves
                 idx_order_local = compute_sample_order(
-                    embeddings=embeddings[new_start:cumulative_end],
-                    lambdas=lambdas_local[new_start:cumulative_end],
+                    embeddings=embeddings[local_new_start:],
+                    lambdas=lambdas_local[local_new_start:],
                     seed=cfg.seed,
                     rd=rd,
                     **cfg.strategy,
@@ -315,8 +312,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
-                # Unconstrained learning still ranks (here: randomizes) only the
-                # newly-introduced held-out slice, not the full cumulative pool.
+                # Unconstrained learning - randomizes
                 idx_order_local = compute_sample_order(
                     embeddings=torch.zeros(cumulative_end - new_start),
                     lambdas=lambdas[new_start:cumulative_end],

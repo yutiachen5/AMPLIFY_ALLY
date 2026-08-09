@@ -43,6 +43,7 @@ def get_mlm_dataloader(
     dtype: torch.dtype = torch.float32,
     merge: bool = False,
     seed: int = 42,
+    max_rows_base_set: int | None = None,
     **kwargs,
 ) -> DataLoader:
     """Public wrapper for constructing a ``torch`` dataloader.
@@ -71,6 +72,8 @@ def get_mlm_dataloader(
         pad_to_multiple_of (int, optional): Pad to a multiple of. Defaults to 8.
         dtype (torch.dtype, optional): Dtype of the pad_mask. Defaults to torch.float32.
         seed (int): Random seed for workers. Defualts to 42.
+        max_rows_base_set (int | None, optional): Only used for training sets where merge is True — caps how
+            many rows of the base set to load into memory. Defaults to None (load all).
 
     Returns:
         torch.utils.data.DataLoader
@@ -104,7 +107,7 @@ def get_mlm_dataloader(
 
     if merge:
         return DataLoader(
-            InMemoryProteinDataset(paths),
+            InMemoryProteinDataset(paths, max_rows_base_set=max_rows_base_set),
             batch_size=batch_size,
             collate_fn=collator,
             num_workers=num_workers,
