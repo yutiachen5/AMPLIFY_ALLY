@@ -1,10 +1,10 @@
 train:
   samples_before_next_set: null
   paths:
-    base: uniref/mila/uniref50_train_part_1.csv
-    held_out_1: uniref/mila/uniref50_train_part_2.csv
-    held_out_2: uniref/mila/uniref50_train_part_3.csv
-    held_out_3: uniref/mila/uniref50_train_part_4.csv
+    base: uniref/mila/uniref50_train_part_1_shuffled.csv
+    held_out_1: uniref/mila/uniref50_train_part_2_shuffled.csv
+    held_out_2: uniref/mila/uniref50_train_part_3_shuffled.csv
+    held_out_3: uniref/mila/uniref50_train_part_4_shuffled.csv
 
 
 validation:
