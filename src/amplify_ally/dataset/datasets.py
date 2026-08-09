@@ -30,8 +30,10 @@ class InMemoryProteinDataset(Dataset):
             sum(1 for _ in open(path, "r")) - 1  # -1 for header
             for _, path in self._set_paths
         ]
-        self._cumulative_ends = np.cumsum(self.set_lengths)  # global idx where each set ends
         self._max_rows_base_set = max_rows_base_set
+        if max_rows_base_set is not None:
+            self.set_lengths[0] = min(self.set_lengths[0], max_rows_base_set)
+        self._cumulative_ends = np.cumsum(self.set_lengths)  # global idx where each set ends
 
         self._next_set_idx = 0
         self._loaded_from_set_idx = 0  # oldest set index still resident in memory

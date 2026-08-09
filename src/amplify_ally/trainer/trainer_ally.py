@@ -529,7 +529,6 @@ def trainer_ally(cfg: DictConfig) -> None:
             with open(os.path.join(summary_dir, "lambdas.json"), "w") as f:
                 json.dump(lambda_dict, f, indent=2)
 
-
     # Make sure that the wandb tracker finishes correctly and close the progress bar
     pbar.close()
     accelerator.end_training()
