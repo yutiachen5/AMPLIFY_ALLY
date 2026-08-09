@@ -23,6 +23,7 @@ class InMemoryProteinDataset(Dataset):
             max_rows_base_set (int | None): Cap on how many rows of the base set to load. 
         """
         self._set_paths: List[Tuple[str, str]] = list(paths.items())  # [(name, path), ...]
+        self.set_names: List[str] = [name for name, _ in self._set_paths]
         self.samples: dict[int, Tuple[str, str]] = {}
 
         self.set_lengths: List[int] = [

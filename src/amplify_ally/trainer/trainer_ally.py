@@ -38,11 +38,11 @@ def trainer_ally(cfg: DictConfig) -> None:
     if not config_check.is_ok():
         raise ConfigError(config_check)
 
-    num_sources = len(cfg.dataset.train.paths)
-    if cfg.strategy.max_rds != num_sources:
+    num_sets = len(cfg.dataset.train.paths)
+    if cfg.strategy.max_rds != num_sets:
         raise ValueError(
             f"cfg.strategy.max_rds ({cfg.strategy.max_rds}) must equal the number of dataset "
-            f"sources in cfg.dataset.train.paths ({num_sources}) — round rd introduces source rd-1."
+            f"sets in cfg.dataset.train.paths ({num_sets}) — round rd introduces set rd-1."
         )
     it = 0
 
@@ -87,8 +87,6 @@ def trainer_ally(cfg: DictConfig) -> None:
         "dir": cfg.wandb.dir,
         "mode": cfg.wandb.mode,
     }
-    # If a wandb run ID was given (e.g. resuming after an HPC preemption), log
-    # into that existing run instead of starting a new one.
     if cfg.trainer.wandb_run_id:
         wandb_init_kwargs["id"] = cfg.trainer.wandb_run_id
         wandb_init_kwargs["resume"] = "allow"
@@ -124,7 +122,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         dtype_pad_mask, dtype_reg_head = torch.float16, torch.float16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.float16
-    elif accelerator.mixed_precision == "bf16": # default
+    elif accelerator.mixed_precision == "bf16": 
         dtype_pad_mask, dtype_reg_head = torch.bfloat16, torch.bfloat16
         if accelerator.distributed_type is DistributedType.DEEPSPEED:
             dtype_class_weight = torch.bfloat16
@@ -151,14 +149,9 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
     dataset = train_dataloader.dataset
     collator = train_dataloader.collate_fn
-    # Cumulative prefix boundaries: round rd's pool is sources[0:rd], a contiguous
-    # prefix of the concatenated dataset (sources are loaded/ordered as configured).
-    cumulative_ends = np.cumsum(dataset.source_lengths)
+
+    cumulative_ends = np.cumsum(dataset.set_lengths) # cumulative idx where each set ends
     total_len = int(cumulative_ends[-1])
-    # Fixed step budget per round: each round now trains only on its own
-    # newly-introduced held-out set rather than a growing cumulative pool,
-    # so there's no cumulative size to scale against.
-    round_n_steps = [cfg.strategy.n_steps for _ in range(1, cfg.strategy.max_rds + 1)]
     emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
         **cfg.dataset.proteingym,
@@ -173,18 +166,13 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Resume checking
     if cfg.trainer.resume and cfg.trainer.resume_it is None:
         raise ValueError("trainer.resume_it must be set when trainer.resume=True")
-
-    # Initialize parameters for constrained learning
     rd_offset = cfg.trainer.resume_it if cfg.trainer.resume else 0
+
+    # Initialize parameters and lambdanet trainer for constrained learning
     lambdas = torch.zeros(total_len, requires_grad=False, dtype=dtype_pad_mask)
     flag = np.zeros(total_len)
     dual_lr = cfg.strategy.dual_lr
-    # dataset.samples for source 0 was already capped to max_rows_base_set rows
-    # at construction time, so idx_order must match what's actually loaded.
-    idx_order = np.arange(len(dataset.samples))
-    dataset.update(idx_order)  # round 1: restrict pool to source 0 (the base set)
 
-    # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
         model=reg,
         optimizer=optimizer_reg,
@@ -194,6 +182,10 @@ def trainer_ally(cfg: DictConfig) -> None:
         dtype=dtype_reg_head,
         **cfg.strategy,
     )
+
+    # Initialize the base set data
+    idx_order = np.arange(len(dataset.samples))
+    dataset.update(idx_order)  # restrict pool to the base set
 
     # Initialize embedder
     embedder = Embedder(
@@ -214,11 +206,8 @@ def trainer_ally(cfg: DictConfig) -> None:
 
     # Resume block
     if cfg.trainer.resume and it > 0:
-        # The checkpointed idx_order covers sources[0:rd_offset]; make sure their
-        # sequence data is actually loaded before dataset.update(idx_order) inside
-        # restore_from_checkpoint indexes into dataset.samples.
         dataset.ensure_loaded_through(rd_offset)
-        resumed_num_steps = sum(round_n_steps[:rd_offset]) * cfg.strategy.n_iter
+        resumed_num_steps = rd_offset * cfg.strategy.n_steps * cfg.strategy.n_iter
         rs = restore_from_checkpoint(
             chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, num_steps=resumed_num_steps,
             accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
@@ -246,16 +235,15 @@ def trainer_ally(cfg: DictConfig) -> None:
         desc="Train",
         unit="step",
         initial=metrics["num_steps"],
-        total=sum(round_n_steps) * cfg.strategy.n_iter,
+        total=cfg.strategy.max_rds * cfg.strategy.n_steps * cfg.strategy.n_iter,
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
     for rd in range(rd_offset + 1, cfg.strategy.max_rds + 1):
-        this_round_n_steps = round_n_steps[rd - 1]
         round_start_steps = metrics["num_steps"]
         accelerator.print(
             f"\n{'=' * 50}\n{f'ROUND {rd}/{cfg.strategy.max_rds}':^50}\n{'=' * 50}"
-            f"\nRound {rd} step budget: {this_round_n_steps}"
+            f"\nRound {rd} step budget: {cfg.strategy.n_steps}"
         )
 
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
@@ -264,8 +252,8 @@ def trainer_ally(cfg: DictConfig) -> None:
             cumulative_end = int(cumulative_ends[rd - 1])
             new_start = int(cumulative_ends[rd - 2])
             accelerator.print(
-                f"Introducing source '{dataset.source_names[rd - 1]}' "
-                f"({dataset.source_lengths[rd - 1]} samples) — cumulative pool size: {cumulative_end}"
+                f"Introducing set '{dataset.set_names[rd - 1]}' "
+                f"({dataset.set_lengths[rd - 1]} samples) — cumulative pool size: {cumulative_end}"
             )
 
             if constrained:
@@ -273,13 +261,13 @@ def trainer_ally(cfg: DictConfig) -> None:
                 fit_start = int(cumulative_ends[rd - 3]) if rd >= 3 else 0
                 local_new_start = new_start - fit_start
 
-                # Extract embeddings and restrict emb_dataloader to exactly [fit_start:cumulative_end) (previous pool + new pool).
+                # Extract embeddings and restrict emb_dataloader to exactly previous pool + new pool.
                 dataset.update(np.arange(fit_start, cumulative_end))
                 raw_ids, raw_embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
                 embeddings = torch.zeros(cumulative_end - fit_start, raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
                 embeddings[raw_ids - fit_start] = raw_embeddings
 
-                # Fit LambdaNet on the previous pool's trained samples (flag >= 1) and predict lambdas for the newly-introduced held-out set.
+                # Fit LambdaNet on the previous pool's trained samples and predict lambdas for the newly-introduced held-out set.
                 lambdas_local, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
                     lambdas=lambdas[fit_start:cumulative_end],
@@ -505,7 +493,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         sys.exit(0)
 
                     # Save emb mdl and aux stuff from the main process once the round (all n_iter reps) is finished
-                    if metrics["num_steps"] - round_start_steps == this_round_n_steps * (iter_idx + 1):
+                    if metrics["num_steps"] - round_start_steps == cfg.strategy.n_steps * (iter_idx + 1):
                         if iter_idx == cfg.strategy.n_iter - 1:
                             accelerator.save_state()
                             if accelerator.is_main_process:
