@@ -300,10 +300,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
+                # Unconstrained learning: randomize idx order for the new pool so
+                # sequence length carries no signal along dataloader index (the
+                # pool's on-disk order is length-sorted).
                 pool_size = cumulative_end - new_start
-                n_draw = min(pool_size, cfg.strategy.n_steps*cfg.trainer.gradient_accumulation_steps*cfg.trainer.train.batch_size)
                 rng = np.random.default_rng(cfg.seed + rd - 2)
-                idx_order_local = np.sort(rng.choice(pool_size, size=n_draw, replace=False))
+                idx_order_local = rng.permutation(pool_size)
                 idx_order = idx_order_local + new_start
 
                 idx_order, dataloader = update_mlm_dataloader(
