@@ -234,8 +234,9 @@ def trainer_ally(cfg: DictConfig) -> None:
         # Rebuild train data loader according to the order of informativeness and diversity except for the last rd
         if rd != 1:
             if constrained:
-                # Extract embeddings after the first round and replace the old emb with new one in later rds
-                embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                raw_ids, raw_embeddings = embedder.get_embedding(model=model, dataloader=emb_dataloader)
+                embeddings = torch.zeros(len(dataset), raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
+                embeddings[raw_ids] = raw_embeddings
 
                 lambdas, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
