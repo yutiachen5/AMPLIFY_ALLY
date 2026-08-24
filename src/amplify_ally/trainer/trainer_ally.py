@@ -13,6 +13,7 @@ import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
 from deepspeed.utils import safe_get_full_fp32_param
+from scipy.stats import spearmanr
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
@@ -277,6 +278,14 @@ def trainer_ally(cfg: DictConfig) -> None:
                 )
                 lambdas[fit_start:cumulative_end] = lambdas_local
 
+                # Snapshot LambdaNet's predicted lambda for the newly-introduced set
+                # (still flag==0, so lambdas[new_start:cumulative_end] is exactly
+                # reconstruct_lambdas's predicted, not empirical, value here) so we can
+                # later check whether it's actually associated with real difficulty —
+                # i.e. the loss each sample gets the first time it's ever trained.
+                predicted_lambda_snapshot = lambdas[new_start:cumulative_end].clone()
+                first_visit_ids, first_visit_losses = [], []
+
                 # Rank only the newly-introduced held-out samples among themselves
                 idx_order_local = compute_sample_order(
                     embeddings=embeddings[local_new_start:],
@@ -333,6 +342,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # Extract the lambda for the current batch
                 lambdas_current = lambdas[global_id]
 
+                # True for samples about to be trained on for the very first time ever
+                # (checked before the flag increment below) — used to test whether
+                # LambdaNet's predicted lambda for this round's new set is actually
+                # associated with real difficulty (see the round-end Spearman check).
+                first_visit_mask = (flag[global_id] == 0) if (constrained and rd != 1) else None
+
                 # Keep recored the number of times each sample was seen by the model
                 flag[global_id] += 1
 
@@ -350,6 +365,10 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                         train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
                         train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+
+                        if first_visit_mask is not None and first_visit_mask.any():
+                            first_visit_ids.append(global_id[first_visit_mask])
+                            first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
 
                         # Log metrics
                         metrics["num_batches_in_epoch"] += 1
@@ -390,6 +409,10 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                     train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
                     train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+
+                    if first_visit_mask is not None and first_visit_mask.any():
+                        first_visit_ids.append(global_id[first_visit_mask])
+                        first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
 
                     # Log metrics
                     pbar.update(1)
@@ -497,6 +520,25 @@ def trainer_ally(cfg: DictConfig) -> None:
                             if accelerator.is_main_process:
                                 save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
                         break
+
+        # Diagnostic: is LambdaNet's predicted lambda for this round's newly-introduced
+        # set actually associated with real difficulty? Correlate the predicted lambda
+        # (snapshotted before training started, i.e. before it could be contaminated by
+        # any empirical update) against the loss each sample got the first time it was
+        # ever trained. This is a main-process-only estimate over whatever fraction of
+        # the new set landed on this rank's dataloader shard — a subsample, but still
+        # informative for a directional Spearman correlation.
+        if constrained and rd != 1 and first_visit_ids and accelerator.is_main_process:
+            fv_ids = np.concatenate(first_visit_ids)
+            fv_losses = np.concatenate(first_visit_losses)
+            fv_predicted_lambda = predicted_lambda_snapshot[fv_ids - new_start].to(torch.float32).numpy()
+            if len(fv_ids) >= 2:
+                rho, pval = spearmanr(fv_predicted_lambda, fv_losses)
+                accelerator.print(
+                    f"[Round {rd}] predicted-lambda vs first-visit-loss Spearman "
+                    f"rho={rho:.4f} (p={pval:.3g}, n={len(fv_ids)})"
+                )
+                accelerator.log({"lambda_vs_loss_spearman": rho, "lambda_vs_loss_n": len(fv_ids)})
 
         # Log metrics
         metrics["num_epochs"] += 1

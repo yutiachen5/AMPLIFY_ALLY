@@ -79,8 +79,12 @@ class Metrics(defaultdict):
                 metrics_agg[f"local_{eval_set}_num_val_correct"] / metrics_agg[f"local_{eval_set}_num_val_pred"]
             )
 
-            if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
-                self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
+            # Skipped for now: best_val_ppl/best_mdl_state are only pre-populated for
+            # {"uniprot", "oas", "pdb", "pg"}, so with the tiered dataset's extra eval
+            # sets (pdbtier, uniprottier, pfam, uniref50tier, mgnify, mixed) this would
+            # KeyError on any eval_set not in that hardcoded set.
+            # if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
+            #     self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
 
         if pg_scc is not None:
             metrics_log["proteingym_scc"] = pg_scc
