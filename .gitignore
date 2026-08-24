@@ -144,6 +144,7 @@ uniref/
 ProteinGym/
 downstream_tasks/
 slurms/
+data/
 
 # Slurm jobs and logs
 *.out
