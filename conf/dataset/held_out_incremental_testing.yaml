@@ -1,15 +1,15 @@
 train:
   samples_before_next_set: null
   paths:
-    base: uniref/mila/part_1_test.csv
-    held_out_1: uniref/mila/part_2_test.csv
-    held_out_2: uniref/mila/part_3_test.csv
-    held_out_3: uniref/mila/part_4_test.csv
+    base: data/mila/part_1_test.csv
+    held_out_1: data/mila/part_2_test.csv
+    held_out_2: data/mila/part_3_test.csv
+    held_out_3: data/mila/part_4_test.csv
 
 
 validation:
   samples_before_next_set: null
-  paths: {uniprot: uniref/mila/uniprot_dev.csv, pdb: uniref/mila/scop_dev.csv, oas: uniref/mila/oas_dev.csv}
+  paths: {uniprot: data/mila/uniprot_dev.csv, pdb: data/mila/scop_dev.csv, oas: data/mila/oas_dev.csv}
 
 proteingym:
   DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv
