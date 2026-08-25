@@ -528,26 +528,34 @@ def trainer_ally(cfg: DictConfig) -> None:
         # ever trained. This is a main-process-only estimate over whatever fraction of
         # the new set landed on this rank's dataloader shard — a subsample, but still
         # informative for a directional Spearman correlation.
-        if constrained and rd != 1 and first_visit_ids and accelerator.is_main_process:
-            fv_ids = np.concatenate(first_visit_ids)
-            fv_losses = np.concatenate(first_visit_losses)
-            fv_predicted_lambda = predicted_lambda_snapshot[fv_ids - new_start].to(torch.float32).numpy()
+        if constrained and rd != 1 and accelerator.is_main_process:
+            if not first_visit_ids:
+                accelerator.print(f"[Round {rd}] lambda-vs-loss check: no first-visit samples captured — skipping.")
+            else:
+                fv_ids = np.concatenate(first_visit_ids)
+                fv_losses = np.concatenate(first_visit_losses)
+                fv_predicted_lambda = predicted_lambda_snapshot[fv_ids - new_start].to(torch.float32).numpy()
 
-            # train_loss_seq can legitimately be NaN when a sample's random masking
-            # selects zero tokens (valid_pos.sum(dim=1) == 0 -> 0/0) — same case
-            # update_dual_variables guards against. A single NaN poisons spearmanr's
-            # result entirely, so drop those rows before correlating.
-            finite = np.isfinite(fv_losses) & np.isfinite(fv_predicted_lambda)
-            n_dropped = len(fv_losses) - finite.sum()
-            fv_losses, fv_predicted_lambda = fv_losses[finite], fv_predicted_lambda[finite]
+                # train_loss_seq can legitimately be NaN when a sample's random masking
+                # selects zero tokens (valid_pos.sum(dim=1) == 0 -> 0/0) — same case
+                # update_dual_variables guards against. A single NaN poisons spearmanr's
+                # result entirely, so drop those rows before correlating.
+                finite = np.isfinite(fv_losses) & np.isfinite(fv_predicted_lambda)
+                n_dropped = len(fv_losses) - finite.sum()
+                fv_losses, fv_predicted_lambda = fv_losses[finite], fv_predicted_lambda[finite]
 
-            if finite.sum() >= 2:
-                rho, pval = spearmanr(fv_predicted_lambda, fv_losses)
-                accelerator.print(
-                    f"[Round {rd}] predicted-lambda vs first-visit-loss Spearman "
-                    f"rho={rho:.4f} (p={pval:.3g}, n={finite.sum()}, dropped_nan={n_dropped})"
-                )
-                accelerator.log({"lambda_vs_loss_spearman": rho, "lambda_vs_loss_n": int(finite.sum())})
+                if finite.sum() < 2:
+                    accelerator.print(
+                        f"[Round {rd}] lambda-vs-loss check: only {finite.sum()} finite samples "
+                        f"out of {len(finite)} captured (dropped_nan={n_dropped}) — not enough to correlate."
+                    )
+                else:
+                    rho, pval = spearmanr(fv_predicted_lambda, fv_losses)
+                    accelerator.print(
+                        f"[Round {rd}] predicted-lambda vs first-visit-loss Spearman "
+                        f"rho={rho:.4f} (p={pval:.3g}, n={finite.sum()}, dropped_nan={n_dropped})"
+                    )
+                    accelerator.log({"lambda_vs_loss_spearman": rho, "lambda_vs_loss_n": int(finite.sum())})
 
         # Log metrics
         metrics["num_epochs"] += 1

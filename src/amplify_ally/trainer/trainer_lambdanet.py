@@ -26,7 +26,6 @@ class LambdaNetTrainer:
         batch_size_lambdanet: int,
         scale_lr_factor: int,
         dtype: torch.dtype = torch.float32,
-        huber_delta: float = 0.1,
         **kwargs,
     ):
         self.seed = seed
@@ -35,12 +34,6 @@ class LambdaNetTrainer:
         self.scale_lr_factor = scale_lr_factor
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
-        # Robust regression target: lambda targets are min-max scaled to [0,1]
-        # before fitting, and a handful of outlier (e.g. undertrained long-sequence)
-        # samples can otherwise dominate an MSE fit. Huber loss caps their influence
-        # to linear beyond `huber_delta`, while staying quadratic (MSE-like) for
-        # typical, well-behaved residuals.
-        self.huber_delta = huber_delta
 
         self.model = model
         self.optimizer = optimizer
@@ -81,7 +74,7 @@ class LambdaNetTrainer:
             x, y = x.to(self.device), y.to(self.device)
             self.optimizer.zero_grad()
             out = self.model(x)
-            loss = F.huber_loss(out.squeeze(), y.squeeze(), delta=self.huber_delta)
+            loss = F.mse_loss(out.squeeze(), y.squeeze())
             self.accelerator.backward(loss)
             total_loss += loss.item()
             self.optimizer.step()
@@ -96,7 +89,7 @@ class LambdaNetTrainer:
             for x, y in dataloader:
                 x, y = x.to(self.device), y.to(self.device)
                 out = self.model(x)
-                loss = F.huber_loss(out.squeeze(), y.squeeze(), delta=self.huber_delta)
+                loss = F.mse_loss(out.squeeze(), y.squeeze())
                 total_loss += loss.item()
 
         return total_loss / len(dataloader)
@@ -185,7 +178,7 @@ class LambdaNetTrainer:
             if epoch % print_every == 0:
                 print(
                     f"[Round {rd} | Epoch {epoch:03d}] "
-                    f"Train Huber: {train_loss:.6f} | Val Huber: {val_loss:.6f} | "
+                    f"Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f} | "
                     f"grad_norm: {grad_norm:.4f} | weight_norm: {weight_norm:.4f}",
                     flush=True,
                 )

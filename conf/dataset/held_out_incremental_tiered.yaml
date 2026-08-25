@@ -1,9 +1,9 @@
 train:
   samples_before_next_set: null
   paths:
-    tier1: data/train/tier1.csv
-    tier2: data/train/tier2.csv
-    tier3: data/train/tier3.csv
+    tier1: data/train/mgy.csv
+    tier2: data/train/uniref50_512.csv
+    tier3: data/train/pdb_pfam_swissprot.csv
 
 
 validation:

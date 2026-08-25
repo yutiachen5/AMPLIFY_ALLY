@@ -22,7 +22,6 @@ reset_lambdanet: False # if False, load lambdanet from previous round's checkpoi
 lambdanet_init_method: null # weight init for lambdanet's Linear layers at construction; null = pytorch default, or "kaiming"/"xavier"
 patience: 6
 scale_lr_factor: 2
-huber_delta: 0.1 # robust regression target for lambdanet's MSE-sensitive outliers; lambda targets are min-max scaled to [0,1]
 
 # embedding pooling
 pooling_method: mean
