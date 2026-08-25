@@ -268,6 +268,19 @@ def trainer_ally(cfg: DictConfig) -> None:
                 embeddings = torch.zeros(cumulative_end - fit_start, raw_embeddings.shape[-1], dtype=raw_embeddings.dtype)
                 embeddings[raw_ids - fit_start] = raw_embeddings
 
+                # Diagnostic: if the previous tier's real (dual-ascent) lambda distribution
+                # is degenerate (e.g. epsilon too high -> nearly everyone clamped to 0),
+                # LambdaNet has no real variance to fit and will rationally predict a
+                # near-constant value for the new tier — which is exactly what would make
+                # the predicted-lambda-vs-loss Spearman check return NaN downstream.
+                prev_lambdas_np = lambdas[fit_start:new_start].to(torch.float32).numpy()
+                accelerator.print(
+                    f"[Round {rd}] previous tier's real lambda distribution: "
+                    f"min={prev_lambdas_np.min():.4g}, max={prev_lambdas_np.max():.4g}, "
+                    f"mean={prev_lambdas_np.mean():.4g}, std={prev_lambdas_np.std():.4g}, "
+                    f"frac_nonzero={(prev_lambdas_np > 0).mean():.4g}"
+                )
+
                 # Fit LambdaNet on the previous pool's trained samples and predict lambdas for the newly-introduced held-out set.
                 lambdas_local, best_reg = lambdanet_trainer.get_lambdas(
                     rd=rd,
@@ -548,6 +561,15 @@ def trainer_ally(cfg: DictConfig) -> None:
                     accelerator.print(
                         f"[Round {rd}] lambda-vs-loss check: only {finite.sum()} finite samples "
                         f"out of {len(finite)} captured (dropped_nan={n_dropped}) — not enough to correlate."
+                    )
+                elif fv_predicted_lambda.std() == 0 or fv_losses.std() == 0:
+                    # spearmanr returns NaN silently when either array has zero variance —
+                    # report which one collapsed instead of just printing "rho=nan".
+                    accelerator.print(
+                        f"[Round {rd}] lambda-vs-loss check: zero variance — "
+                        f"predicted_lambda std={fv_predicted_lambda.std():.4g} "
+                        f"(min={fv_predicted_lambda.min():.4g}, max={fv_predicted_lambda.max():.4g}), "
+                        f"loss std={fv_losses.std():.4g} — rho is undefined, not just noisy."
                     )
                 else:
                     rho, pval = spearmanr(fv_predicted_lambda, fv_losses)
