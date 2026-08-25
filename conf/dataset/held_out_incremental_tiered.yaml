@@ -1,23 +1,23 @@
 train:
   samples_before_next_set: null
   paths:
-    tier1: tiered/train/tier1.csv
-    tier2: tiered/train/tier2.csv
-    tier3: tiered/train/tier3.csv
+    tier1: data/train/tier1.csv
+    tier2: data/train/tier2.csv
+    tier3: data/train/tier3.csv
 
 
 validation:
   samples_before_next_set: null
   paths:
-    uniprot: uniref/mila/uniprot_dev.csv
-    pdb: uniref/mila/scop_dev.csv
-    oas: uniref/mila/oas_dev.csv
-    pdbtier: tiered/val/val_pdb.csv
-    uniprottier: tiered/val/val_uniprot.csv
-    pfam: tiered/val/val_pfam.csv
-    uniref50tier: tiered/val/val_uniref50.csv
-    mgnify: tiered/val/val_mgnify.csv
-    mixed: tiered/val/val_mixed.csv
+    uniprot: data/mila/uniprot_dev.csv
+    pdb: data/mila/scop_dev.csv
+    oas: data/mila/oas_dev.csv
+    pdbtier: data/val/val_pdb.csv
+    uniprottier: data/val/val_uniprot.csv
+    pfam: data/val/val_pfam.csv
+    uniref50: data/val/val_uniref50.csv
+    mgnify: data/val/val_mgnify.csv
+    mixed: data/val/val_mixed.csv
 
 proteingym:
   DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv
