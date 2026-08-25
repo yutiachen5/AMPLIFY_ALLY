@@ -532,13 +532,22 @@ def trainer_ally(cfg: DictConfig) -> None:
             fv_ids = np.concatenate(first_visit_ids)
             fv_losses = np.concatenate(first_visit_losses)
             fv_predicted_lambda = predicted_lambda_snapshot[fv_ids - new_start].to(torch.float32).numpy()
-            if len(fv_ids) >= 2:
+
+            # train_loss_seq can legitimately be NaN when a sample's random masking
+            # selects zero tokens (valid_pos.sum(dim=1) == 0 -> 0/0) — same case
+            # update_dual_variables guards against. A single NaN poisons spearmanr's
+            # result entirely, so drop those rows before correlating.
+            finite = np.isfinite(fv_losses) & np.isfinite(fv_predicted_lambda)
+            n_dropped = len(fv_losses) - finite.sum()
+            fv_losses, fv_predicted_lambda = fv_losses[finite], fv_predicted_lambda[finite]
+
+            if finite.sum() >= 2:
                 rho, pval = spearmanr(fv_predicted_lambda, fv_losses)
                 accelerator.print(
                     f"[Round {rd}] predicted-lambda vs first-visit-loss Spearman "
-                    f"rho={rho:.4f} (p={pval:.3g}, n={len(fv_ids)})"
+                    f"rho={rho:.4f} (p={pval:.3g}, n={finite.sum()}, dropped_nan={n_dropped})"
                 )
-                accelerator.log({"lambda_vs_loss_spearman": rho, "lambda_vs_loss_n": len(fv_ids)})
+                accelerator.log({"lambda_vs_loss_spearman": rho, "lambda_vs_loss_n": int(finite.sum())})
 
         # Log metrics
         metrics["num_epochs"] += 1
