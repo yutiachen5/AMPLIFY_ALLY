@@ -195,6 +195,7 @@ class LambdaNetTrainer:
         # Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
         pred_lambdas = pred_lambdas * scale + y_min
+        pred_lambdas = torch.expm1(pred_lambdas)  # invert the log1p fit in get_lambdanet_dataloaders
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
