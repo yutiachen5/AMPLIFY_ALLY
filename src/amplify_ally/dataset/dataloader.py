@@ -172,7 +172,15 @@ def get_lambdanet_dataloaders(
     y_val = trained_lambdas[val_idx]
     X_test = untrained_emb
 
-    # min-max scaler
+    # Lambda is right-skewed (many samples near 0, a long tail of hard ones) — fit in
+    # log space so MSE isn't dominated by getting the dense near-zero majority right
+    # while the rare high-lambda tail barely moves the loss. lambda >= 0 always (dual
+    # ascent clamps at 0), so log1p is defined everywhere; LambdaNetTrainer.get_lambdas
+    # inverts this with expm1 after undoing the min-max scaling below.
+    y_train = torch.log1p(y_train)
+    y_val = torch.log1p(y_val)
+
+    # min-max scaler (now operating in log space)
     y_min, y_max = y_train.min(), y_train.max()
     scale = (y_max - y_min).clamp_min(1e-12)
 

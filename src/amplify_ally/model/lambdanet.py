@@ -24,7 +24,6 @@ class LambdaNet(nn.Module):
             nn.LeakyReLU(),
 
             nn.Linear(64, 1),
-            nn.Sigmoid()
         )
 
         if init_method is not None:

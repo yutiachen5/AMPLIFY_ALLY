@@ -195,6 +195,11 @@ class LambdaNetTrainer:
         # Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
         pred_lambdas = pred_lambdas * scale + y_min
+        pred_lambdas = torch.expm1(pred_lambdas)  # invert the log1p fit in get_lambdanet_dataloaders
+        # lambda is a dual variable and must stay >= 0. The model's output layer is now
+        # unbounded (no sigmoid), so an extrapolated prediction below log-space 0 would
+        # invert through expm1 to a small negative number without this clamp.
+        pred_lambdas = pred_lambdas.clamp_min(0)
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
