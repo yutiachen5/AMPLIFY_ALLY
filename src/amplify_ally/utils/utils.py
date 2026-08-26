@@ -24,6 +24,36 @@ def save_aux_state(
     if optimizer_reg_state is not None:
         torch.save(optimizer_reg_state, os.path.join(folder, "lambdanet_optimizer.pt"))
 
+def save_round_intermediates(
+    intermediates_dir: str,
+    rd: int,
+    embeddings: torch.Tensor,
+    lambdas: torch.Tensor,
+    flag: np.ndarray,
+    offset: int,
+) -> None:
+    """Save this round's embeddings + lambda (+ flag, + global-index offset) for
+    offline analysis. `flag >= 1` marks which entries are empirical (dual-ascent)
+    lambda vs. LambdaNet-predicted lambda for still-untrained samples.
+
+    Args:
+        intermediates_dir: directory to save round_{rd}/ under.
+        rd: round number (used only for the folder name).
+        embeddings: [N, hidden_size] embeddings used for this round's LambdaNet fit/ranking.
+        lambdas: [N] lambda values for the same N samples, post get_lambdas.
+        flag: [N] visit counts for the same N samples (flag >= 1 => empirical lambda).
+        offset: global index of embeddings[0]/lambdas[0]/flag[0] (i.e. `fit_start`
+            on the tiered/incremental design, or 0 on a single-pool design), so
+            these local indices can be mapped back to `dataset.samples` later.
+    """
+    folder = os.path.join(intermediates_dir, f"round_{rd}")
+    os.makedirs(folder, exist_ok=True)
+    np.save(os.path.join(folder, "embeddings.npy"), embeddings.detach().cpu().to(torch.float32).numpy())
+    np.save(os.path.join(folder, "lambdas.npy"), lambdas.detach().cpu().to(torch.float32).numpy())
+    np.save(os.path.join(folder, "flag.npy"), flag)
+    np.save(os.path.join(folder, "offset.npy"), np.asarray(offset, dtype=np.int64))
+
+
 def load_aux_state(
     chk_dir: str,
     it: int,

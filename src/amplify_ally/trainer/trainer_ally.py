@@ -22,7 +22,7 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..utils import save_aux_state
+from ..utils import save_aux_state, save_round_intermediates
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
@@ -290,6 +290,16 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy,
                 )
                 lambdas[fit_start:cumulative_end] = lambdas_local
+
+                if cfg.strategy.save_intermediates and accelerator.is_main_process:
+                    save_round_intermediates(
+                        intermediates_dir=os.path.join(cfg.trainer.dir, "intermediates"),
+                        rd=rd,
+                        embeddings=embeddings,
+                        lambdas=lambdas_local,
+                        flag=flag[fit_start:cumulative_end],
+                        offset=fit_start,
+                    )
 
                 # Snapshot LambdaNet's predicted lambda for the newly-introduced set
                 # (still flag==0, so lambdas[new_start:cumulative_end] is exactly
