@@ -18,6 +18,7 @@ validation:
     uniref50: data/val/val_uniref50.csv
     mgnify: data/val/val_mgnify.csv
     mixed: data/val/val_mixed.csv
+    uniref20: data/tiered/val/uniref_20_val.csv
 
 proteingym:
   DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv

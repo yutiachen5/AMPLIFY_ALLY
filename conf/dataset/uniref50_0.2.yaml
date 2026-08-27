@@ -5,7 +5,7 @@ train:
 
 validation:
   samples_before_next_set: null
-  paths: {uniprot: uniref/mila/uniprot_dev.csv, pdb: uniref/mila/scop_dev.csv, oas: uniref/mila/oas_dev.csv}
+  paths: {uniprot: uniref/mila/uniprot_dev.csv, pdb: uniref/mila/scop_dev.csv, oas: uniref/mila/oas_dev.csv, uniref20: data/tiered/val/uniref_20_val.csv}
 
 proteingym:
   DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv
