@@ -195,11 +195,13 @@ class LambdaNetTrainer:
         # Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
         pred_lambdas = pred_lambdas * scale + y_min
+        # Clamp to the log-space range actually observed in y_train before inverting.
+        # The model's output layer is unbounded (no sigmoid), so extrapolated predictions
+        # for untrained embeddings can otherwise blow up through expm1 (empirically seen
+        # up to ~18 vs. a max of ~1.6 ever produced by real dual ascent) and dominate the
+        # descending-lambda sort in compute_sample_order.
+        pred_lambdas = pred_lambdas.clamp(min=y_min.item(), max=(y_min + scale).item())
         pred_lambdas = torch.expm1(pred_lambdas)  # invert the log1p fit in get_lambdanet_dataloaders
-        # lambda is a dual variable and must stay >= 0. The model's output layer is now
-        # unbounded (no sigmoid), so an extrapolated prediction below log-space 0 would
-        # invert through expm1 to a small negative number without this clamp.
-        pred_lambdas = pred_lambdas.clamp_min(0)
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)
