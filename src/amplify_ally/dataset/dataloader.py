@@ -43,6 +43,7 @@ def get_mlm_dataloader(
     dtype: torch.dtype = torch.float32,
     merge: bool = False,
     seed: int = 42,
+    shuffle: bool = True,
     **kwargs,
 ) -> DataLoader:
     """Public wrapper for constructing a ``torch`` dataloader.
@@ -71,6 +72,8 @@ def get_mlm_dataloader(
         pad_to_multiple_of (int, optional): Pad to a multiple of. Defaults to 8.
         dtype (torch.dtype, optional): Dtype of the pad_mask. Defaults to torch.float32.
         seed (int): Random seed for workers. Defualts to 42.
+        shuffle (bool, optional): Shuffle sample order when merge=True (e.g. round 1's
+            training pool, which has no idx_order override). Defaults to True.
 
     Returns:
         torch.utils.data.DataLoader
@@ -110,7 +113,7 @@ def get_mlm_dataloader(
             # so without shuffling it walks the on-disk row order verbatim — for
             # datasets stored sorted by sequence length, that confines round 1 to one
             # length extreme instead of a representative sample.
-            shuffle=True,
+            shuffle=shuffle,
             collate_fn=collator,
             num_workers=num_workers,
             prefetch_factor=2,

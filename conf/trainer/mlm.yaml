@@ -8,6 +8,7 @@ train:
   mask_probability: 0.15
   num_workers: 4
   batch_size: 256
+  shuffle: True
   label_smoothing: 0
   weights: null #{L: 1.5, A: 1, G: 1, ...}
   exclude_special_tokens_replacement: False
