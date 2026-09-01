@@ -13,6 +13,7 @@ def save_aux_state(
     idx_order: np.ndarray,
     best_reg: dict | None = None,
     optimizer_reg_state: dict | None = None,
+    embeddings: torch.Tensor | None = None,
 ) -> None:
     folder = os.path.join(chk_dir, f"checkpoint_{it}")
     os.makedirs(folder, exist_ok=True)
@@ -23,6 +24,10 @@ def save_aux_state(
         torch.save(best_reg, os.path.join(folder, "lambdanet.pt"))
     if optimizer_reg_state is not None:
         torch.save(optimizer_reg_state, os.path.join(folder, "lambdanet_optimizer.pt"))
+    if embeddings is not None:
+        # Kept in its native dtype (e.g. bf16) rather than upcast to fp32 on save,
+        # since this tensor is dataset-sized and upcasting would double its disk footprint.
+        torch.save(embeddings.detach().cpu(), os.path.join(folder, "embeddings.pt"))
 
 def load_aux_state(
     chk_dir: str,

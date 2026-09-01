@@ -166,6 +166,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     flag = np.zeros(len(dataset))
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
+    embeddings = None  # set for rd != 1 (constrained); stays None through round 1
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -474,7 +475,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                     print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
                     accelerator.wait_for_everyone()
                     print(f"Done on rank {accelerator.process_index}")
                     sys.exit(0)
@@ -483,7 +484,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                 if metrics["num_steps"] % cfg.strategy.n_steps == 0:
                     accelerator.save_state()
                     if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict())
+                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
                     break
 
         # Diagnostic: is LambdaNet's predicted lambda for this round actually associated
