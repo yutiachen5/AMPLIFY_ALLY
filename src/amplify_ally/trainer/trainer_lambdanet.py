@@ -26,6 +26,7 @@ class LambdaNetTrainer:
         batch_size_lambdanet: int,
         scale_lr_factor: int,
         dtype: torch.dtype = torch.float32,
+        lambdanet_grad_clip: float = 1.0,
         **kwargs,
     ):
         self.seed = seed
@@ -34,6 +35,7 @@ class LambdaNetTrainer:
         self.scale_lr_factor = scale_lr_factor
         self.dtype = dtype # the dtype used in pretraining
         self.device = device
+        self.grad_clip = lambdanet_grad_clip
 
         self.model = model
         self.optimizer = optimizer
@@ -76,6 +78,8 @@ class LambdaNetTrainer:
             out = self.model(x)
             loss = F.mse_loss(out.squeeze(), y.squeeze())
             self.accelerator.backward(loss)
+            if self.grad_clip is not None and self.grad_clip > 0:
+                self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             total_loss += loss.item()
             self.optimizer.step()
 
@@ -195,6 +199,15 @@ class LambdaNetTrainer:
         # Predict & reconstruct
         pred_lambdas = self.predict(loaders["test"])
         pred_lambdas = pred_lambdas * scale + y_min
+        # The output layer is unbounded (no Sigmoid), so extrapolated predictions for
+        # untrained embeddings can otherwise blow up arbitrarily (empirically seen up to
+        # ~18 vs. a max of ~1.6 ever produced by real dual ascent) and dominate the
+        # descending-lambda sort in compute_sample_order. Clamp the lower bound to lambda's
+        # actual domain constraint (>= 0, it's a dual variable) rather than to y_min, since
+        # y_min is only an empirical statistic of a sample and isn't guaranteed >= 0 in
+        # general even though it always should be in this pipeline today.
+        y_max = y_min + scale
+        pred_lambdas = pred_lambdas.clamp(min=0.0, max=y_max.item())
 
         # Construct lambdas for the next round of pretraining
         full_lambdas = self.reconstruct_lambdas(pred_lambdas)

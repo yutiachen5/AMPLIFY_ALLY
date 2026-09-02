@@ -21,6 +21,7 @@ reset_lambdanet: False # if False, load lambdanet from previous round's checkpoi
 lambdanet_init_method: null # weight init for lambdanet's Linear layers at construction; null = pytorch default, or "kaiming"/"xavier"
 patience: 6
 scale_lr_factor: 2
+lambdanet_grad_clip: 1.0 # max grad norm for LambdaNet's own optimizer step; set null/0 to disable
 
 # embedding pooling
 pooling_method: mean
