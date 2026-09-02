@@ -1,0 +1,13 @@
+train:
+  samples_before_next_set: null
+  paths: {uniref50: data/mila/uniref50_train_0.2_dedup_uniref20val.csv}
+
+
+validation:
+  samples_before_next_set: null
+  paths: {uniprot: data/mila/uniprot_dev.csv, pdb: data/mila/scop_dev.csv, oas: data/mila/oas_dev.csv, uniref20: data/val/val_uniref20.csv}
+
+proteingym:
+  DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv
+  DMS_data_dir: downstream_tasks/ProteinGym/DMS_ProteinGym_substitutions
+  excluded_indices: [73, 124, 181, 182] # exclude long assays during pretraining, set to [] if including everything
