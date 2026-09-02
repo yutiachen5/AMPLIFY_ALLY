@@ -79,8 +79,8 @@ class Metrics(defaultdict):
                 metrics_agg[f"local_{eval_set}_num_val_correct"] / metrics_agg[f"local_{eval_set}_num_val_pred"]
             )
 
-            if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
-                self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
+            # if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
+            #     self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
 
         if pg_scc is not None:
             metrics_log["proteingym_scc"] = pg_scc
