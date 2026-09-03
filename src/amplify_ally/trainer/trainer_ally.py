@@ -199,7 +199,7 @@ def trainer_ally(cfg: DictConfig) -> None:
     # Resume block
     if cfg.trainer.resume and it > 0:
         rs = restore_from_checkpoint(
-            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps,
+            chk_dir=chk_dir, it=it, trainer_cfg=cfg.trainer, n_steps=cfg.strategy.n_steps * cfg.strategy.n_iter,
             accelerator=accelerator, reg=reg, optimizer_reg=optimizer_reg,
             dtype=dtype_pad_mask, reg_dtype=dtype_reg_head, dataset=dataset, collator=collator, metrics=metrics,
         )
@@ -226,7 +226,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         desc="Train",
         unit="step",
         initial=metrics["num_steps"],
-        total=cfg.strategy.n_steps * cfg.strategy.max_rds,
+        total=cfg.strategy.n_steps * cfg.strategy.n_iter * cfg.strategy.max_rds,
         disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
     )
 
@@ -297,54 +297,107 @@ def trainer_ally(cfg: DictConfig) -> None:
 
             dataloader = accelerator.prepare_data_loader(dataloader)
 
-            # reset dual lr to initial value 
+            # reset dual lr to initial value
             dual_lr = cfg.strategy.dual_lr
-            
-        for global_id, x, y, pad_mask in dataloader:
-            global_id = np.array(global_id.cpu())
 
-            # Increment the number of batches
-            metrics["local_num_batches"] += 1
-
-            # Extract the lambda for the current batch
-            lambdas_current = lambdas[global_id]
-
-            # True for samples about to be trained on for the very first time ever
-            # (checked before the flag increment below) — used to test whether
-            # LambdaNet's predicted lambda for this round is actually associated with
-            # real difficulty (see the round-end Spearman check).
-            first_visit_mask = (flag[global_id] == 0) if (constrained and rd != 1) else None
-
-            # Keep recored the number of times each sample was seen by the model
-            flag[global_id] += 1
-
-            # Under the no_sync context manager, PyTorch will skip synchronizing the gradients when .backward() is
-            # called, and the first call to .backward() outside this context manager will trigger the synchronization (accumulate gradients)
-            if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
-                with accelerator.no_sync(model):
-
+        # Repeat the same ranked/random idx_order for n_iter passes before the next
+        # round re-ranks. Lets a round stay confined to whatever depth of the current
+        # ranking it already selected (e.g. n_steps=4000, n_iter=2) instead of extending
+        # further into a ranking that may be less reliable deeper down, while still
+        # covering the same total step budget (n_steps * n_iter) as a single longer pass.
+        for iter_idx in range(cfg.strategy.n_iter):
+            accelerator.print(f"---- Iter {iter_idx + 1}/{cfg.strategy.n_iter} ----")
+            for global_id, x, y, pad_mask in dataloader:
+                global_id = np.array(global_id.cpu())
+    
+                # Increment the number of batches
+                metrics["local_num_batches"] += 1
+    
+                # Extract the lambda for the current batch
+                lambdas_current = lambdas[global_id]
+    
+                # True for samples about to be trained on for the very first time ever
+                # (checked before the flag increment below) — used to test whether
+                # LambdaNet's predicted lambda for this round is actually associated with
+                # real difficulty (see the round-end Spearman check).
+                first_visit_mask = (flag[global_id] == 0) if (constrained and rd != 1) else None
+    
+                # Keep recored the number of times each sample was seen by the model
+                flag[global_id] += 1
+    
+                # Under the no_sync context manager, PyTorch will skip synchronizing the gradients when .backward() is
+                # called, and the first call to .backward() outside this context manager will trigger the synchronization (accumulate gradients)
+                if metrics["local_num_batches"] % cfg.trainer.gradient_accumulation_steps != 0:
+                    with accelerator.no_sync(model):
+    
+                        out = model(x, pad_mask) 
+                        logits = out.logits
+    
+                        valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 is for unmasked)
+                        train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
+                        train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
+    
+                        train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
+                        train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
+    
+                        if first_visit_mask is not None and first_visit_mask.any():
+                            first_visit_ids.append(global_id[first_visit_mask])
+                            first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
+    
+                        # Log metrics
+                        metrics["num_batches_in_epoch"] += 1
+                        metrics["local_num_samples"] += x.shape[0]
+                        metrics["local_num_tokens"] += (pad_mask == 0).sum().item()
+                        metrics["local_num_train_pred"] += torch.sum(y != -100).item()
+                        metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
+                        metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
+    
+                        # Compute gradient and update dual variables
+                        lambdas_updated = update_dual_variables(
+                            train_loss_seq=train_loss_seq,
+                            lambdas_current=lambdas_current,
+                            lr_dual=dual_lr,
+                            dtype=dtype_reg_head,
+                            **cfg.strategy,
+                        )
+    
+                        lagrangian, constraint_violations = get_lagrangian(
+                            device=accelerator.device,
+                            train_loss_seq=train_loss_seq,
+                            lambdas_current=lambdas_current,
+                            **cfg.strategy
+                        )
+                        accelerator.backward(lagrangian)
+    
+                        lambdas[global_id] = lambdas_updated.detach().cpu()
+    
+                        metrics["lambda_mean"] = lambdas[flag >= 1].mean().item()
+                        metrics["constraint_violations"] = constraint_violations
+                else:
                     out = model(x, pad_mask) 
                     logits = out.logits
-
-                    valid_pos = (y != -100) # Only compute the loss on the masked tokens (-100 is for unmasked)
+    
+                    valid_pos = (y != -100)
                     train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
                     train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
-
+    
                     train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
                     train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
-
+    
                     if first_visit_mask is not None and first_visit_mask.any():
                         first_visit_ids.append(global_id[first_visit_mask])
                         first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
-
+    
                     # Log metrics
+                    pbar.update(1)
+                    metrics["num_steps"] += 1
                     metrics["num_batches_in_epoch"] += 1
                     metrics["local_num_samples"] += x.shape[0]
                     metrics["local_num_tokens"] += (pad_mask == 0).sum().item()
                     metrics["local_num_train_pred"] += torch.sum(y != -100).item()
                     metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
-
+    
                     # Compute gradient and update dual variables
                     lambdas_updated = update_dual_variables(
                         train_loss_seq=train_loss_seq,
@@ -353,7 +406,7 @@ def trainer_ally(cfg: DictConfig) -> None:
                         dtype=dtype_reg_head,
                         **cfg.strategy,
                     )
-
+    
                     lagrangian, constraint_violations = get_lagrangian(
                         device=accelerator.device,
                         train_loss_seq=train_loss_seq,
@@ -361,131 +414,85 @@ def trainer_ally(cfg: DictConfig) -> None:
                         **cfg.strategy
                     )
                     accelerator.backward(lagrangian)
-
+    
                     lambdas[global_id] = lambdas_updated.detach().cpu()
-
+    
                     metrics["lambda_mean"] = lambdas[flag >= 1].mean().item()
                     metrics["constraint_violations"] = constraint_violations
-            else:
-                out = model(x, pad_mask) 
-                logits = out.logits
-
-                valid_pos = (y != -100)
-                train_loss_token = loss_fn(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1)) # [batch_size * max_len]
-                train_loss_token = train_loss_token.view(logits.shape[0], logits.shape[1]) # [batch_size, max_len]
-
-                train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
-                train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
-
-                if first_visit_mask is not None and first_visit_mask.any():
-                    first_visit_ids.append(global_id[first_visit_mask])
-                    first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
-
-                # Log metrics
-                pbar.update(1)
-                metrics["num_steps"] += 1
-                metrics["num_batches_in_epoch"] += 1
-                metrics["local_num_samples"] += x.shape[0]
-                metrics["local_num_tokens"] += (pad_mask == 0).sum().item()
-                metrics["local_num_train_pred"] += torch.sum(y != -100).item()
-                metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
-                metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
-
-                # Compute gradient and update dual variables
-                lambdas_updated = update_dual_variables(
-                    train_loss_seq=train_loss_seq,
-                    lambdas_current=lambdas_current,
-                    lr_dual=dual_lr,
-                    dtype=dtype_reg_head,
-                    **cfg.strategy,
-                )
-
-                lagrangian, constraint_violations = get_lagrangian(
-                    device=accelerator.device,
-                    train_loss_seq=train_loss_seq,
-                    lambdas_current=lambdas_current,
-                    **cfg.strategy
-                )
-                accelerator.backward(lagrangian)
-
-                lambdas[global_id] = lambdas_updated.detach().cpu()
-
-                metrics["lambda_mean"] = lambdas[flag >= 1].mean().item()
-                metrics["constraint_violations"] = constraint_violations
-
-                # Evaluate the model
-                if metrics["num_steps"] % cfg.trainer.eval_steps == 0:
-                    for k, v in eval_dataloaders.items():
-                        num_val_pred, sum_val_loss, num_val_correct = evaluate(
-                            model=model,
-                            dataloader=v,
-                            loss_fn=loss_fn_mean,
-                            vocab_size=cfg.tokenizer.vocab_size,
-                        )
-                        metrics[f"local_{k}_sum_val_loss"] = sum_val_loss
-                        metrics[f"local_{k}_num_val_correct"] = num_val_correct
-                        metrics[f"local_{k}_num_val_pred"] = num_val_pred
-
-                if metrics["num_steps"] % cfg.trainer.pg_eval_steps == 0:
-                    if accelerator.is_main_process:
-                        proteingym_scc = evaluate_proteingym(
-                            model=accelerator.unwrap_model(model),
-                            dataloader=pg_dataloader,
-                            dataset=pg_dataset,
-                            device=accelerator.device,
-                            pad_token_id=cfg.tokenizer.pad_token_id,
-                            dtype=dtype_pad_mask,
-                        )
-                        metrics["proteingym_scc"] = proteingym_scc
-                    accelerator.wait_for_everyone()
-
-                # Log metrics
-                if metrics["num_steps"] % cfg.wandb.log_interval == 0:
-                    # https://deepspeed.readthedocs.io/en/latest/zero3.html#deepspeed.utils.safe_get_full_grad
-                    if accelerator.distributed_type is DistributedType.DEEPSPEED:
-                        metrics["grad_norm"] = model.get_global_grad_norm()
-                        metrics["weight_norm"] = (
-                            sum(safe_get_full_fp32_param(p).norm(2).item() ** 2 for p in model.parameters()) ** 0.5
-                        )
-                    # DDP
-                    else:
-                        metrics["grad_norm"] = sum(p.grad.data.norm(2).item() ** 2 for p in model.parameters()) ** 0.5
-                        metrics["weight_norm"] = sum(p.data.norm(2).item() ** 2 for p in model.parameters()) ** 0.5
-                    metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
-                    metrics["lambdanet_learning_rate"] = lambdanet_trainer.optimizer.param_groups[0]["lr"] 
-                    metrics.log(accelerator, os.path.join(cfg.wandb.dir, "wandb", "metrics.json"), model)
-
-                # Gradient clipping
-                if cfg.trainer.gradient_clipping is not None and cfg.trainer.gradient_clipping > 0:
-                    accelerator.clip_grad_norm_(model.parameters(), cfg.trainer.gradient_clipping)
-
-                # Update the parameters and the scheduler
-                optimizer.step()
-                scheduler.step()
-
-                # Adjust the dual learning rate every x steps
-                if metrics["num_steps"] % cfg.strategy.dual_lr_stepsize == 0:
-                    dual_lr *= cfg.strategy.dual_lr_gamma
-
-                # Reset the gradient
-                optimizer.zero_grad()
-
-                # Checkpoint on SIGTERM: all ranks are at a safe point (no collective in flight)
-                if _sigterm_received:
-                    print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
-                    accelerator.save_state()
-                    if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
-                    accelerator.wait_for_everyone()
-                    print(f"Done on rank {accelerator.process_index}")
-                    sys.exit(0)
-
-                # Save emb mdl and aux stuff from the main process
-                if metrics["num_steps"] % cfg.strategy.n_steps == 0:
-                    accelerator.save_state()
-                    if accelerator.is_main_process:
-                        save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
-                    break
+    
+                    # Evaluate the model
+                    if metrics["num_steps"] % cfg.trainer.eval_steps == 0:
+                        for k, v in eval_dataloaders.items():
+                            num_val_pred, sum_val_loss, num_val_correct = evaluate(
+                                model=model,
+                                dataloader=v,
+                                loss_fn=loss_fn_mean,
+                                vocab_size=cfg.tokenizer.vocab_size,
+                            )
+                            metrics[f"local_{k}_sum_val_loss"] = sum_val_loss
+                            metrics[f"local_{k}_num_val_correct"] = num_val_correct
+                            metrics[f"local_{k}_num_val_pred"] = num_val_pred
+    
+                    if metrics["num_steps"] % cfg.trainer.pg_eval_steps == 0:
+                        if accelerator.is_main_process:
+                            proteingym_scc = evaluate_proteingym(
+                                model=accelerator.unwrap_model(model),
+                                dataloader=pg_dataloader,
+                                dataset=pg_dataset,
+                                device=accelerator.device,
+                                pad_token_id=cfg.tokenizer.pad_token_id,
+                                dtype=dtype_pad_mask,
+                            )
+                            metrics["proteingym_scc"] = proteingym_scc
+                        accelerator.wait_for_everyone()
+    
+                    # Log metrics
+                    if metrics["num_steps"] % cfg.wandb.log_interval == 0:
+                        # https://deepspeed.readthedocs.io/en/latest/zero3.html#deepspeed.utils.safe_get_full_grad
+                        if accelerator.distributed_type is DistributedType.DEEPSPEED:
+                            metrics["grad_norm"] = model.get_global_grad_norm()
+                            metrics["weight_norm"] = (
+                                sum(safe_get_full_fp32_param(p).norm(2).item() ** 2 for p in model.parameters()) ** 0.5
+                            )
+                        # DDP
+                        else:
+                            metrics["grad_norm"] = sum(p.grad.data.norm(2).item() ** 2 for p in model.parameters()) ** 0.5
+                            metrics["weight_norm"] = sum(p.data.norm(2).item() ** 2 for p in model.parameters()) ** 0.5
+                        metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
+                        metrics["lambdanet_learning_rate"] = lambdanet_trainer.optimizer.param_groups[0]["lr"] 
+                        metrics.log(accelerator, os.path.join(cfg.wandb.dir, "wandb", "metrics.json"), model)
+    
+                    # Gradient clipping
+                    if cfg.trainer.gradient_clipping is not None and cfg.trainer.gradient_clipping > 0:
+                        accelerator.clip_grad_norm_(model.parameters(), cfg.trainer.gradient_clipping)
+    
+                    # Update the parameters and the scheduler
+                    optimizer.step()
+                    scheduler.step()
+    
+                    # Adjust the dual learning rate every x steps
+                    if metrics["num_steps"] % cfg.strategy.dual_lr_stepsize == 0:
+                        dual_lr *= cfg.strategy.dual_lr_gamma
+    
+                    # Reset the gradient
+                    optimizer.zero_grad()
+    
+                    # Checkpoint on SIGTERM: all ranks are at a safe point (no collective in flight)
+                    if _sigterm_received:
+                        print(f"Checkpointing on rank {accelerator.process_index} after SIGTERM...")
+                        accelerator.save_state()
+                        if accelerator.is_main_process:
+                            save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
+                        accelerator.wait_for_everyone()
+                        print(f"Done on rank {accelerator.process_index}")
+                        sys.exit(0)
+    
+                    # Save emb mdl and aux stuff from the main process
+                    if metrics["num_steps"] % cfg.strategy.n_steps == 0:
+                        accelerator.save_state()
+                        if accelerator.is_main_process:
+                            save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
+                        break
 
         # Diagnostic: is LambdaNet's predicted lambda for this round actually associated
         # with real difficulty? Correlate the predicted lambda (snapshotted before
