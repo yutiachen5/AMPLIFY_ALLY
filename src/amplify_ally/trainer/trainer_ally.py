@@ -268,6 +268,21 @@ def trainer_ally(cfg: DictConfig) -> None:
                         fit_mask=(flag >= 1),
                         n_bins=cfg.strategy.residualize_n_bins,
                     )
+
+                    # Sanity-check the residualization actually did what it's supposed to
+                    # on this round's real data, rather than only trusting the synthetic
+                    # test it was built against.
+                    rl_np = ranking_lambdas.numpy()
+                    touched_mask_np = (flag >= 1)
+                    rl_touched = rl_np[touched_mask_np]
+                    len_touched = lengths[touched_mask_np]
+                    len_corr = np.corrcoef(rl_touched, len_touched)[0, 1]
+                    accelerator.print(
+                        f"[Round {rd}] residualized ranking lambda (touched): "
+                        f"mean={rl_touched.mean():.4g}, std={rl_touched.std():.4g}, "
+                        f"min={rl_touched.min():.4g}, max={rl_touched.max():.4g}, "
+                        f"corr_with_length={len_corr:.4g} (should be near 0)"
+                    )
                 else:
                     ranking_lambdas = lambdas
 
