@@ -233,7 +233,7 @@ def residualize_by_length(
     Returns:
         Residual tensor, same shape and dtype as `values`.
     """
-    values_np = values.detach().cpu().numpy() if isinstance(values, torch.Tensor) else np.asarray(values)
+    values_np = values.detach().cpu().to(torch.float32).numpy() if isinstance(values, torch.Tensor) else np.asarray(values)
     lengths = np.asarray(lengths)
     fit_mask = np.asarray(fit_mask).astype(bool)
 
