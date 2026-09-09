@@ -209,57 +209,7 @@ def get_lambdanet_dataloaders(
         "test":  DataLoader(test_ds, **loader_kwargs),
     }
 
-
-def residualize_by_length(
-    values: torch.Tensor,
-    lengths: np.ndarray,
-    fit_mask: np.ndarray,
-    n_bins: int = 50,
-) -> torch.Tensor:
-    """Subtract the length-conditional expected value from `values`, so that
-    ranking by the result asks "is this sample surprising for its length" instead
-    of "is this sample hard/long". The length -> value relationship is estimated
-    from `fit_mask` samples only (real, measured values) via quantile bins over
-    length, then applied to every sample (fit_mask or not) based on which bin its
-    own length falls into.
-
-    Args:
-        values: per-sample values to residualize (e.g. lambda), full-dataset-sized.
-        lengths: per-sample sequence lengths, same size and indexing as `values`.
-        fit_mask: boolean mask selecting which samples have real (not predicted)
-            values to fit the length relationship from -- typically `flag >= 1`.
-        n_bins: number of length quantile bins to estimate the relationship with.
-
-    Returns:
-        Residual tensor, same shape and dtype as `values`.
-    """
-    values_np = values.detach().cpu().numpy() if isinstance(values, torch.Tensor) else np.asarray(values)
-    lengths = np.asarray(lengths)
-    fit_mask = np.asarray(fit_mask).astype(bool)
-
-    fit_lengths = lengths[fit_mask]
-    fit_values = values_np[fit_mask]
-    global_mean = fit_values.mean()
-
-    edges = np.unique(np.quantile(fit_lengths, np.linspace(0, 1, n_bins + 1)))
-    if len(edges) < 3:
-        # Degenerate case (e.g. all fit lengths identical) -- no length signal to remove.
-        return torch.as_tensor(values_np - global_mean, dtype=torch.float32)
-
-    inner_edges = edges[1:-1]
-    bin_idx_fit = np.clip(np.digitize(fit_lengths, inner_edges), 0, len(edges) - 2)
-    bin_means = np.full(len(edges) - 1, global_mean)
-    for b in range(len(edges) - 1):
-        members = fit_values[bin_idx_fit == b]
-        if len(members) > 0:
-            bin_means[b] = members.mean()
-
-    bin_idx_all = np.clip(np.digitize(lengths, inner_edges), 0, len(edges) - 2)
-    residual = values_np - bin_means[bin_idx_all]
-
-    return torch.as_tensor(residual, dtype=torch.float32)
-
-
+    
 def compute_sample_order(
     embeddings: torch.Tensor,
     lambdas: torch.Tensor,

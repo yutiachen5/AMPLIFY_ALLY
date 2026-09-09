@@ -9,8 +9,6 @@ dual_lr_stepsize: 500
 n_clusters: 128
 n_steps: 8000
 n_iter: 1 # number of times to repeat n_steps over the same ranked idx_order before the next round re-ranks
-residualize_by_length: False # rank by "lambda residual after removing length's expected contribution" instead of raw lambda
-residualize_n_bins: 50 # number of length quantile bins used to estimate the length->lambda relationship, if residualize_by_length is True
 
 # lambdanet training
 val_size: 0.2 

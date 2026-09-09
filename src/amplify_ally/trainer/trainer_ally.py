@@ -19,7 +19,7 @@ from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
 from ..metric import Metrics
 from ..loss import get_loss, get_lagrangian, update_dual_variables
-from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, residualize_by_length, get_emb_dataloader, get_proteingym_dataloader
+from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..utils import save_aux_state
@@ -145,9 +145,6 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
     dataset = train_dataloader.dataset
     collator = train_dataloader.collate_fn
-    # Cached once: per-sample sequence length, used to optionally residualize lambda
-    # against length before ranking (see strategy.residualize_by_length below).
-    lengths = np.array([len(s[1]) for s in dataset.samples])
     emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
         **cfg.dataset.proteingym,
@@ -251,38 +248,18 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy,
                 )
 
-                # Ranking value used for this round's ordering. By default this is just
-                # `lambdas` (real dual-ascent value where touched, LambdaNet's prediction
-                # otherwise) -- the same quantity that also drives the Lagrangian loss.
-                # When residualize_by_length is set, ranking instead uses "is this sample
-                # surprising for its length" rather than raw hardness/length, to test
-                # whether the curriculum has value beyond the length<->lambda correlation.
-                # This is a SEPARATE quantity from `lambdas` -- it must never overwrite
-                # `lambdas` itself, since that would corrupt the actual dual variable used
-                # for the per-batch Lagrangian loss (a residual can be negative, which is
-                # not a valid lambda).
-                if cfg.strategy.residualize_by_length:
-                    ranking_lambdas = residualize_by_length(
-                        values=lambdas,
-                        lengths=lengths,
-                        fit_mask=(flag >= 1),
-                        n_bins=cfg.strategy.residualize_n_bins,
-                    )
-                else:
-                    ranking_lambdas = lambdas
-
-                # Snapshot the ranking value right after it's produced (before any
-                # training this round could contaminate it with an empirical update), so
-                # we can check whether it's actually associated with real difficulty —
+                # Snapshot LambdaNet's predicted lambda right after it's produced (before
+                # any training this round could contaminate it with an empirical update),
+                # so we can check whether it's actually associated with real difficulty —
                 # i.e. the loss each still-untrained sample gets the first time it's ever
                 # trained. Whole-dataset indexed here (this branch reranks the full pool
                 # each round rather than introducing disjoint sets).
-                predicted_lambda_snapshot = ranking_lambdas.clone()
+                predicted_lambda_snapshot = lambdas.clone()
                 first_visit_ids, first_visit_losses = [], []
 
                 idx_order = compute_sample_order(
                     embeddings=embeddings,
-                    lambdas=ranking_lambdas,
+                    lambdas=lambdas,
                     seed=cfg.seed,
                     rd=rd,
                     **cfg.strategy,
