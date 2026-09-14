@@ -4,7 +4,7 @@ _name_: ally
 max_rds: 5
 n_iter: 1 # number of times to repeat n_steps of training before lambdanet training + loader update
 epsilon: 2.25 # set epsilon to 1000 for unconstrained learning
-nonparametric_epsilon: False # if True, replace scalar epsilon with a per-length-bin threshold refit each round from the previous round's own real losses (see LengthBinnedEpsilon)
+nonparametric_epsilon: True # replace scalar epsilon with a per-length-bin threshold refit each round from the previous round's own real losses (see LengthBinnedEpsilon)
 epsilon_n_bins: 50 # number of length quantile bins for nonparametric_epsilon
 epsilon_min_count: 50 # empirical-Bayes shrinkage pseudo-count toward the round mean for sparse length bins
 dual_lr: 0.1
@@ -14,8 +14,8 @@ n_clusters: 128
 n_steps: 8000
 
 # lambdanet training
-val_size: 0.2 
-max_epochs: 40 
+val_size: 0.2
+max_epochs: 40
 batch_size_lambdanet: 512
 batch_size_kmeans: 512
 batch_size_emb: 1024

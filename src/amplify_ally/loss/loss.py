@@ -1,4 +1,5 @@
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
@@ -67,12 +68,14 @@ def get_lagrangian(
     train_loss_seq: torch.Tensor,
     lambdas_current: torch.Tensor,
     epsilon: float = 2.4,
+    epsilon_override: torch.Tensor | None = None,
     **kwargs,
 ) -> torch.Tensor:
     lambdas_current = lambdas_current.to(device)
+    eps = epsilon_override.to(device) if epsilon_override is not None else epsilon
 
-    lagrangian = (train_loss_seq * (1 + lambdas_current) - lambdas_current * epsilon).nanmean()
-    constraint_violations = (train_loss_seq - epsilon).nanmean().item()
+    lagrangian = (train_loss_seq * (1 + lambdas_current) - lambdas_current * eps).nanmean()
+    constraint_violations = (train_loss_seq - eps).nanmean().item()
 
     return lagrangian, constraint_violations
 
@@ -83,14 +86,85 @@ def update_dual_variables(
     lr_dual: float = 0.1,
     dtype: torch.dtype = torch.float32,
     epsilon: float = 2.4,
+    epsilon_override: torch.Tensor | None = None,
     **kwargs,
 ) -> torch.Tensor:
 
     train_loss_seq = train_loss_seq.detach().cpu().to(dtype)
+    eps = epsilon_override.to(dtype) if epsilon_override is not None else epsilon
     nan_idxs = torch.nonzero(torch.isnan(train_loss_seq), as_tuple=True)
-    train_loss_seq[nan_idxs] = epsilon
+    train_loss_seq[nan_idxs] = eps[nan_idxs] if torch.is_tensor(eps) else eps
 
-    lambdas_current += lr_dual * (train_loss_seq - epsilon)
+    lambdas_current += lr_dual * (train_loss_seq - eps)
     lambdas_current.data.clamp_(min=0)
 
     return lambdas_current
+
+
+class LengthBinnedEpsilon:
+    """Nonparametric, length-conditional loss threshold for dual ascent.
+
+    A single scalar epsilon makes the dual variable track absolute
+    difficulty, which is confounded with sequence length (see
+    project_length_confound_finding). This replaces it with a per-length-bin
+    threshold refit after each round from that round's own real (first-visit)
+    losses, so a sample only accrues lambda when its loss is worse than
+    typical for other samples of similar length trained around the same
+    point in training — not just whenever it's long or short in absolute
+    terms.
+
+    Bin edges are fixed the first time `update` is called (quantiles of that
+    round's lengths) and reused for every later round, so lookups stay
+    well-defined even for a round whose own length distribution differs.
+    Bin thresholds are refit every round from only the most recently
+    completed round's data (not accumulated across all history), since the
+    model's overall calibration keeps shifting round to round and a stale
+    threshold would silently drift out of step with it.
+    """
+
+    def __init__(self, global_epsilon: float, n_bins: int = 50, min_count: int = 50):
+        self.global_epsilon = global_epsilon
+        self.n_bins = n_bins
+        self.min_count = min_count
+        self.bin_edges: np.ndarray | None = None  # quantile cut points, set on first update()
+        self.bin_epsilon = np.full(n_bins, global_epsilon, dtype=np.float64)
+
+    def _bin_index(self, lengths: np.ndarray) -> np.ndarray:
+        if self.bin_edges is None:
+            return np.zeros(len(lengths), dtype=np.int64)
+        return np.searchsorted(self.bin_edges, lengths, side="right").clip(0, self.n_bins - 1)
+
+    def lookup(self, lengths: np.ndarray) -> torch.Tensor:
+        idx = self._bin_index(np.asarray(lengths))
+        return torch.as_tensor(self.bin_epsilon[idx], dtype=torch.float32)
+
+    def update(self, lengths: np.ndarray, losses: np.ndarray) -> None:
+        lengths = np.asarray(lengths)
+        losses = np.asarray(losses)
+        finite = np.isfinite(losses)
+        lengths, losses = lengths[finite], losses[finite]
+        if len(losses) == 0:
+            return
+
+        if self.bin_edges is None:
+            quantiles = np.linspace(0, 1, self.n_bins + 1)[1:-1]
+            self.bin_edges = np.quantile(lengths, quantiles)
+
+        idx = self._bin_index(lengths)
+        global_mean = losses.mean()
+        for b in range(self.n_bins):
+            mask = idx == b
+            n = int(mask.sum())
+            if n == 0:
+                continue
+            cell_mean = losses[mask].mean()
+            # Empirical-Bayes shrinkage toward this round's global mean for sparse bins,
+            # so a handful of samples in a rarely-hit length bin can't swing epsilon wildly.
+            self.bin_epsilon[b] = (n * cell_mean + self.min_count * global_mean) / (n + self.min_count)
+
+    def state_dict(self) -> dict:
+        return {"bin_edges": self.bin_edges, "bin_epsilon": self.bin_epsilon}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.bin_edges = state["bin_edges"]
+        self.bin_epsilon = state["bin_epsilon"]
