@@ -152,6 +152,9 @@ jobs
 jobs/
 /logs
 
+# Wandb folder
+/wandb
+
 # DeepSpeed conf
 .deepspeed_env
 

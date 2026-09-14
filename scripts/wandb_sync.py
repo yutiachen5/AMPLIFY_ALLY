@@ -1,12 +1,12 @@
 import wandb
 
 api = wandb.Api()
-old_run = api.run("tecchk-cyt-duke-university/amplify_ally/3ycivkmj")
+old_run = api.run("tecchk-cyt-duke-university/amplify_ally/gs3biny5")
 
 config = old_run.config
 history = old_run.history(samples=1000000)
 
-cutoff_step = 40_000
+cutoff_step = 8_000
 truncated = history[history["_step"] <= cutoff_step]
 
 new_run = wandb.init(project="amplify_ally", entity="tecchk-cyt-duke-university", config=config)
