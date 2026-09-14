@@ -1,9 +1,9 @@
 train:
   samples_before_next_set: null
   paths:
-    tier1: data/train/mgy.csv
-    tier2: data/train/uniref50_512.csv
-    tier3: data/train/pdb_pfam_swissprot.csv
+    tier1: data/train/mgy_dedup.csv
+    tier2: data/train/uniref50_512_dedup.csv
+    tier3: data/train/pdb_pfam_uniprot_dedup.csv
 
 
 validation:
@@ -18,7 +18,7 @@ validation:
     uniref50: data/val/val_uniref50.csv
     mgnify: data/val/val_mgnify.csv
     mixed: data/val/val_mixed.csv
-    uniref20: data/tiered/val/uniref_20_val.csv
+    uniref20: data/val/val_uniref20.csv
 
 proteingym:
   DMS_reference_file_path: downstream_tasks/ProteinGym/DMS_substitutions.csv
