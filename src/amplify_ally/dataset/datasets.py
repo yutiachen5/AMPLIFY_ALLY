@@ -11,25 +11,50 @@ from ..tokenizer import ProteinTokenizer
 
 
 class InMemoryProteinDataset(Dataset):
-    def __init__(self, paths: dict, max_rows_base_set: int | None = None, **kwargs):
+    def __init__(
+        self,
+        paths: dict | None = None,
+        path: str | None = None,
+        n_partitions: int | None = None,
+        max_rows_base_set: int | None = None,
+        **kwargs,
+    ):
         """
         Protein dataset that loads heldout or base set into memory one at a time, keeping at
         most two sets resident: the current round's pool and the one right
-        before it. Later rounds never look further back than that, 
+        before it. Later rounds never look further back than that,
         so anything older is evicted as soon as a new set loads.
 
         Args:
-            paths (dict): Name -> path to the CSV files to read.
-            max_rows_base_set (int | None): Cap on how many rows of the base set to load. 
+            paths (dict | None): Name -> path, one CSV file per set (heterogeneous tiers).
+            path (str | None): Single CSV file to split into `n_partitions` sets by
+                round-robin (row i -> partition i % n_partitions) rather than contiguous
+                row ranges, so every set is representative of the file's overall length/
+                content distribution regardless of on-disk row order (e.g. a file that
+                happens to be stored sorted by sequence length). Used instead of `paths`.
+            n_partitions (int | None): Number of sets to split `path` into.
+            max_rows_base_set (int | None): Cap on how many rows of the first set to load.
         """
-        self._set_paths: List[Tuple[str, str]] = list(paths.items())  # [(name, path), ...]
-        self.set_names: List[str] = [name for name, _ in self._set_paths]
+        self._n_partitions = n_partitions
         self.samples: dict[int, Tuple[str, str]] = {}
 
-        self.set_lengths: List[int] = [
-            sum(1 for _ in open(path, "r")) - 1  # -1 for header
-            for _, path in self._set_paths
-        ]
+        if path is not None:
+            total_rows = sum(1 for _ in open(path, "r")) - 1  # -1 for header
+            base_size, remainder = divmod(total_rows, n_partitions)
+            self.set_names = [f"partition_{i + 1}" for i in range(n_partitions)]
+            self._set_paths: List[str] = [path] * n_partitions
+            # Round-robin split: the first `remainder` partitions (rows total_rows -
+            # remainder .. total_rows - 1 land there) absorb the one extra row each
+            # from the uneven division.
+            self.set_lengths: List[int] = [base_size + (1 if i < remainder else 0) for i in range(n_partitions)]
+        else:
+            self.set_names = list(paths.keys())
+            self._set_paths = list(paths.values())
+            self.set_lengths = [
+                sum(1 for _ in open(p, "r")) - 1  # -1 for header
+                for p in self._set_paths
+            ]
+
         self._max_rows_base_set = max_rows_base_set
         if max_rows_base_set is not None:
             self.set_lengths[0] = min(self.set_lengths[0], max_rows_base_set)
@@ -43,19 +68,36 @@ class InMemoryProteinDataset(Dataset):
     def ensure_loaded_through(self, n_sets: int) -> None:
         """Load sets into memory but retains only the two most recently loaded sets in self.samples."""
         while self._next_set_idx < n_sets:
-            start = 0 if self._next_set_idx == 0 else int(self._cumulative_ends[self._next_set_idx - 1])
-            row_cap = self._max_rows_base_set if self._next_set_idx == 0 else None
-            _, path = self._set_paths[self._next_set_idx]
-            with open(path, "r") as f:
+            set_idx = self._next_set_idx
+            start = 0 if set_idx == 0 else int(self._cumulative_ends[set_idx - 1])
+            n_rows = self.set_lengths[set_idx]
+            file_path = self._set_paths[set_idx]
+
+            with open(file_path, "r") as f:
                 next(f)  # skip header
-                for offset, line in enumerate(f):  # offset: row counter within each set 
-                    if row_cap is not None and offset >= row_cap:
-                        break
-                    row = line.strip().split(",")
-                    self.samples[start + offset] = (row[0], row[1])  # (record_id, sequence)
+                if self._n_partitions is None:
+                    # One CSV per set: read it start to end.
+                    for offset, line in zip(range(n_rows), f):
+                        row = line.strip().split(",")
+                        self.samples[start + offset] = (row[0], row[1])  # (record_id, sequence)
+                else:
+                    # Shared file, round-robin: row line_idx belongs to set
+                    # (line_idx % n_partitions). This set's rows are scattered across
+                    # the whole file, so loading it costs a full scan regardless of
+                    # which set it is — only matching rows get materialized, though,
+                    # so memory stays bounded to this set's share.
+                    offset = 0
+                    for line_idx, line in enumerate(f):
+                        if line_idx % self._n_partitions != set_idx:
+                            continue
+                        row = line.strip().split(",")
+                        self.samples[start + offset] = (row[0], row[1])
+                        offset += 1
+                        if offset >= n_rows:
+                            break
             self._next_set_idx += 1
 
-            # Delete the samples from older set 
+            # Delete the samples from older set
             keep_from_set = max(0, self._next_set_idx - 2)
             if keep_from_set > self._loaded_from_set_idx:
                 evict_before = int(self._cumulative_ends[keep_from_set - 1])

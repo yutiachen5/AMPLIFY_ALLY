@@ -28,12 +28,14 @@ def get_mlm_dataloader(
     eos_token_id: int,
     unk_token_id: int,
     other_special_token_ids: list | None,
-    paths: dict,
     max_length: int,
     random_truncate: bool,
     return_labels: bool,
     num_workers: int,
     batch_size: int,
+    paths: dict | None = None,
+    path: str | None = None,
+    n_partitions: int | None = None,
     mask_probability: int = 0,
     span_probability: float = 0.0,
     span_max: int = 0,
@@ -44,6 +46,7 @@ def get_mlm_dataloader(
     merge: bool = False,
     seed: int = 42,
     max_rows_base_set: int | None = None,
+    shuffle: bool = True,
     **kwargs,
 ) -> DataLoader:
     """Public wrapper for constructing a ``torch`` dataloader.
@@ -56,7 +59,12 @@ def get_mlm_dataloader(
         eos_token_id (int): <EOS> token index in the vocab file.
         unk_token_id (int): <UNK> token index in the vocab file.
         other_special_token_Unknown ids (list | None): List of other special tokens.
-        paths (dict): Dict of name:paths to the CSV files to read.
+        paths (dict | None): Dict of name:paths to the CSV files to read, one file per set
+            (heterogeneous tiers). Only used when `merge=True`; mutually exclusive with
+            `path`/`n_partitions`.
+        path (str | None): Single CSV file to split into `n_partitions` round-robin sets
+            instead of `paths`. Only used when `merge=True`.
+        n_partitions (int | None): Number of sets to split `path` into.
         max_length (int): Maximum sequence length.
         random_truncate (bool): Truncate the sequence to a random subsequence of if longer than truncate.
         return_labels (bool): Return the protein labels.
@@ -74,6 +82,10 @@ def get_mlm_dataloader(
         seed (int): Random seed for workers. Defualts to 42.
         max_rows_base_set (int | None, optional): Only used for training sets where merge is True — caps how
             many rows of the base set to load into memory. Defaults to None (load all).
+        shuffle (bool, optional): Shuffle sample order when merge=True (e.g. round 1's
+            training pool, or any round whose step budget doesn't cover its full set) —
+            without it, a set gets walked in on-disk order, which carries a length signal
+            if the source file is sorted by length. Defaults to True.
 
     Returns:
         torch.utils.data.DataLoader
@@ -107,8 +119,15 @@ def get_mlm_dataloader(
 
     if merge:
         return DataLoader(
-            InMemoryProteinDataset(paths, max_rows_base_set=max_rows_base_set),
+            InMemoryProteinDataset(paths=paths, path=path, n_partitions=n_partitions, max_rows_base_set=max_rows_base_set),
             batch_size=batch_size,
+            # Round 1 (and any round whose step budget doesn't consume its whole set)
+            # trains directly off this dataloader with no idx_order override, so without
+            # shuffling it walks the set in on-disk order — for a source file stored
+            # sorted by length, or partitions built via round-robin (which preserves
+            # each row's relative on-disk order), that biases training toward one length
+            # extreme instead of a representative sample.
+            shuffle=shuffle,
             collate_fn=collator,
             num_workers=num_workers,
             prefetch_factor=2,

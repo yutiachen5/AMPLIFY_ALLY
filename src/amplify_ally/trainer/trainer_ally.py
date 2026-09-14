@@ -39,11 +39,11 @@ def trainer_ally(cfg: DictConfig) -> None:
     if not config_check.is_ok():
         raise ConfigError(config_check)
 
-    num_sets = len(cfg.dataset.train.paths)
+    num_sets = cfg.dataset.train.n_partitions if cfg.dataset.train.get("path") else len(cfg.dataset.train.paths)
     if cfg.strategy.max_rds != num_sets:
         raise ValueError(
             f"cfg.strategy.max_rds ({cfg.strategy.max_rds}) must equal the number of dataset "
-            f"sets in cfg.dataset.train.paths ({num_sets}) — round rd introduces set rd-1."
+            f"sets ({num_sets}) — round rd introduces set rd-1."
         )
     it = 0
 
