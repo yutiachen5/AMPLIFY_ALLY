@@ -1,6 +1,6 @@
 train:
   samples_before_next_set: null
-  path: data/mila/uniref50_train_0.2.csv
+  path: data/mila/uniref50_train.csv
   n_partitions: 5
 
 

@@ -594,7 +594,7 @@ def trainer_ally(cfg: DictConfig) -> None:
             length_epsilon.load_state_dict(state)
             accelerator.print(
                 f"[Round {rd}] nonparametric epsilon refit from {len(local_losses)} main-process samples "
-                f"-> bin_epsilon mean={length_epsilon.bin_epsilon.mean():.4g}, "
+                f"-> margin={length_epsilon.margin:.4g}, bin_epsilon mean={length_epsilon.bin_epsilon.mean():.4g}, "
                 f"min={length_epsilon.bin_epsilon.min():.4g}, max={length_epsilon.bin_epsilon.max():.4g}"
             )
 

@@ -120,6 +120,22 @@ class LengthBinnedEpsilon:
     completed round's data (not accumulated across all history), since the
     model's overall calibration keeps shifting round to round and a stale
     threshold would silently drift out of step with it.
+
+    Without a margin, a bin's threshold would sit right at that bin's own
+    just-observed mean loss — so by construction, roughly half of next
+    round's samples land above it and half below, and the average
+    constraint violation self-cancels to ~0 every round regardless of how
+    training is actually going. That starves the dual variable of the
+    sustained, one-directional pressure it needs to grow to a meaningful
+    magnitude (observed empirically: lambda_mean fell from ~0.043 to ~0.024
+    during round 1 under the cold-start scalar epsilon, then went flat at
+    ~0.025-0.028 for the rest of training once bins started self-referencing
+    their own recent mean). `margin` is calibrated once, from round 1's own
+    average violation under the cold-start scalar epsilon (the same gap the
+    original fixed-epsilon design relied on), and held fixed thereafter —
+    so later per-bin thresholds sit that same amount below their own mean,
+    preserving comparable sustained pressure instead of collapsing to zero
+    the moment thresholds become each bin's own recent average.
     """
 
     def __init__(self, global_epsilon: float, n_bins: int = 50, min_count: int = 50):
@@ -127,6 +143,7 @@ class LengthBinnedEpsilon:
         self.n_bins = n_bins
         self.min_count = min_count
         self.bin_edges: np.ndarray | None = None  # quantile cut points, set on first update()
+        self.margin: float | None = None  # calibrated once, from the first update() call
         self.bin_epsilon = np.full(n_bins, global_epsilon, dtype=np.float64)
 
     def _bin_index(self, lengths: np.ndarray) -> np.ndarray:
@@ -150,6 +167,13 @@ class LengthBinnedEpsilon:
             quantiles = np.linspace(0, 1, self.n_bins + 1)[1:-1]
             self.bin_edges = np.quantile(lengths, quantiles)
 
+        if self.margin is None:
+            # Calibrate once, from this (first) round's own average violation under the
+            # cold-start scalar epsilon. Clamped to >= 0: a negative value would mean
+            # round 1 didn't violate on average (epsilon too loose), and subtracting a
+            # negative margin would raise the bar above the mean instead of below it.
+            self.margin = max(0.0, float(losses.mean() - self.global_epsilon))
+
         idx = self._bin_index(lengths)
         global_mean = losses.mean()
         for b in range(self.n_bins):
@@ -160,11 +184,13 @@ class LengthBinnedEpsilon:
             cell_mean = losses[mask].mean()
             # Empirical-Bayes shrinkage toward this round's global mean for sparse bins,
             # so a handful of samples in a rarely-hit length bin can't swing epsilon wildly.
-            self.bin_epsilon[b] = (n * cell_mean + self.min_count * global_mean) / (n + self.min_count)
+            shrunk_mean = (n * cell_mean + self.min_count * global_mean) / (n + self.min_count)
+            self.bin_epsilon[b] = shrunk_mean - self.margin
 
     def state_dict(self) -> dict:
-        return {"bin_edges": self.bin_edges, "bin_epsilon": self.bin_epsilon}
+        return {"bin_edges": self.bin_edges, "bin_epsilon": self.bin_epsilon, "margin": self.margin}
 
     def load_state_dict(self, state: dict) -> None:
         self.bin_edges = state["bin_edges"]
         self.bin_epsilon = state["bin_epsilon"]
+        self.margin = state["margin"]

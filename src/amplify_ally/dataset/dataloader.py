@@ -47,6 +47,7 @@ def get_mlm_dataloader(
     seed: int = 42,
     max_rows_base_set: int | None = None,
     shuffle: bool = True,
+    freeze_mask: bool = False,
     **kwargs,
 ) -> DataLoader:
     """Public wrapper for constructing a ``torch`` dataloader.
@@ -86,6 +87,9 @@ def get_mlm_dataloader(
             training pool, or any round whose step budget doesn't cover its full set) —
             without it, a set gets walked in on-disk order, which carries a length signal
             if the source file is sorted by length. Defaults to True.
+        freeze_mask (bool, optional): If True, freezes masking (using `seed` as the base) so
+            a given sample always gets the same mask (see DataCollatorMLM). Use for
+            validation only — leave False for training. Defaults to False.
 
     Returns:
         torch.utils.data.DataLoader
@@ -115,6 +119,7 @@ def get_mlm_dataloader(
         padding,
         pad_to_multiple_of,
         dtype,
+        deterministic_seed=seed if freeze_mask else None,
     )
 
     if merge:
