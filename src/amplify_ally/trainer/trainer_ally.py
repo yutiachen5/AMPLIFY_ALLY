@@ -11,15 +11,15 @@ from omegaconf import OmegaConf, DictConfig
 
 import torch
 from accelerate import Accelerator
-from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
+from accelerate.utils import DistributedType, ProjectConfiguration, set_seed, broadcast_object_list
 from deepspeed.utils import safe_get_full_fp32_param
 from scipy.stats import spearmanr
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
 from ..metric import Metrics
-from ..loss import get_loss, get_lagrangian, update_dual_variables
-from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, residualize_by_length, get_emb_dataloader, get_proteingym_dataloader
+from ..loss import get_loss, get_lagrangian, update_dual_variables, LengthBinnedEpsilon
+from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
 from ..utils import save_aux_state
@@ -145,8 +145,8 @@ def trainer_ally(cfg: DictConfig) -> None:
     )
     dataset = train_dataloader.dataset
     collator = train_dataloader.collate_fn
-    # Cached once: per-sample sequence length, used to optionally residualize lambda
-    # against length before ranking (see strategy.residualize_by_length below).
+    # Cached once: per-sample sequence length, used to look up each batch's
+    # length-conditional epsilon threshold (see LengthBinnedEpsilon below).
     lengths = np.array([len(s[1]) for s in dataset.samples])
     emb_dataloader = get_emb_dataloader(dataset, collator, **cfg.strategy)
     pg_dataloader, pg_dataset = get_proteingym_dataloader(
@@ -170,6 +170,19 @@ def trainer_ally(cfg: DictConfig) -> None:
     dual_lr = cfg.strategy.dual_lr
     idx_order = np.arange(len(dataset))
     embeddings = None  # set for rd != 1 (constrained); stays None through round 1
+
+    # Nonparametric (length-conditional) epsilon: replaces the single scalar
+    # epsilon with a per-length-bin threshold refit each round from the
+    # previous round's own real losses. See LengthBinnedEpsilon docstring.
+    # Only meaningful for constrained runs — the unconstrained baseline's
+    # epsilon=1000 sentinel is left untouched.
+    length_epsilon = None
+    if cfg.strategy.nonparametric_epsilon and constrained:
+        length_epsilon = LengthBinnedEpsilon(
+            global_epsilon=cfg.strategy.epsilon,
+            n_bins=cfg.strategy.epsilon_n_bins,
+            min_count=cfg.strategy.epsilon_min_count,
+        )
 
     # Initialzie lambdanet trainer
     lambdanet_trainer = LambdaNetTrainer(
@@ -251,40 +264,10 @@ def trainer_ally(cfg: DictConfig) -> None:
                     **cfg.strategy,
                 )
 
-                # Ranking value used for this round's ordering. By default this is just
-                # `lambdas` (real dual-ascent value where touched, LambdaNet's prediction
-                # otherwise) -- the same quantity that also drives the Lagrangian loss.
-                # When residualize_by_length is set, ranking instead uses "is this sample
-                # surprising for its length" rather than raw hardness/length, to test
-                # whether the curriculum has value beyond the length<->lambda correlation.
-                # This is a SEPARATE quantity from `lambdas` -- it must never overwrite
-                # `lambdas` itself, since that would corrupt the actual dual variable used
-                # for the per-batch Lagrangian loss (a residual can be negative, which is
-                # not a valid lambda).
-                if cfg.strategy.residualize_by_length:
-                    ranking_lambdas = residualize_by_length(
-                        values=lambdas,
-                        lengths=lengths,
-                        fit_mask=(flag >= 1),
-                        n_bins=cfg.strategy.residualize_n_bins,
-                    )
-
-                    # Sanity-check the residualization actually did what it's supposed to
-                    # on this round's real data, rather than only trusting the synthetic
-                    # test it was built against.
-                    rl_np = ranking_lambdas.numpy()
-                    touched_mask_np = (flag >= 1)
-                    rl_touched = rl_np[touched_mask_np]
-                    len_touched = lengths[touched_mask_np]
-                    len_corr = np.corrcoef(rl_touched, len_touched)[0, 1]
-                    accelerator.print(
-                        f"[Round {rd}] residualized ranking lambda (touched): "
-                        f"mean={rl_touched.mean():.4g}, std={rl_touched.std():.4g}, "
-                        f"min={rl_touched.min():.4g}, max={rl_touched.max():.4g}, "
-                        f"corr_with_length={len_corr:.4g} (should be near 0)"
-                    )
-                else:
-                    ranking_lambdas = lambdas
+                # Ranking value used for this round's ordering: `lambdas` (real
+                # dual-ascent value where touched, LambdaNet's prediction otherwise) --
+                # the same quantity that also drives the Lagrangian loss.
+                ranking_lambdas = lambdas
 
                 # Snapshot the ranking value right after it's produced (before any
                 # training this round could contaminate it with an empirical update), so
@@ -338,6 +321,11 @@ def trainer_ally(cfg: DictConfig) -> None:
             # reset dual lr to initial value
             dual_lr = cfg.strategy.dual_lr
 
+        # Accumulates this round's own (length, loss) pairs on the main process only,
+        # used to refit length_epsilon once the round finishes (see below) — never
+        # fit from the same round's data it's about to gate, so there's no leakage.
+        epsilon_fit_lengths, epsilon_fit_losses = [], []
+
         # Repeat the same ranked/random idx_order for n_iter passes before the next
         # round re-ranks. Lets a round stay confined to whatever depth of the current
         # ranking it already selected (e.g. n_steps=4000, n_iter=2) instead of extending
@@ -347,13 +335,18 @@ def trainer_ally(cfg: DictConfig) -> None:
             accelerator.print(f"---- Iter {iter_idx + 1}/{cfg.strategy.n_iter} ----")
             for global_id, x, y, pad_mask in dataloader:
                 global_id = np.array(global_id.cpu())
-    
+
                 # Increment the number of batches
                 metrics["local_num_batches"] += 1
-    
+
                 # Extract the lambda for the current batch
                 lambdas_current = lambdas[global_id]
-    
+
+                epsilon_override = None
+                if length_epsilon is not None:
+                    lengths_batch = lengths[global_id]
+                    epsilon_override = length_epsilon.lookup(lengths_batch)
+
                 # True for samples about to be trained on for the very first time ever
                 # (checked before the flag increment below) — used to test whether
                 # LambdaNet's predicted lambda for this round is actually associated with
@@ -381,7 +374,11 @@ def trainer_ally(cfg: DictConfig) -> None:
                         if first_visit_mask is not None and first_visit_mask.any():
                             first_visit_ids.append(global_id[first_visit_mask])
                             first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
-    
+
+                        if length_epsilon is not None and accelerator.is_main_process:
+                            epsilon_fit_lengths.append(lengths_batch)
+                            epsilon_fit_losses.append(train_loss_seq.detach().cpu().numpy())
+
                         # Log metrics
                         metrics["num_batches_in_epoch"] += 1
                         metrics["local_num_samples"] += x.shape[0]
@@ -389,20 +386,22 @@ def trainer_ally(cfg: DictConfig) -> None:
                         metrics["local_num_train_pred"] += torch.sum(y != -100).item()
                         metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                         metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
-    
+
                         # Compute gradient and update dual variables
                         lambdas_updated = update_dual_variables(
                             train_loss_seq=train_loss_seq,
                             lambdas_current=lambdas_current,
                             lr_dual=dual_lr,
                             dtype=dtype_reg_head,
+                            epsilon_override=epsilon_override,
                             **cfg.strategy,
                         )
-    
+
                         lagrangian, constraint_violations = get_lagrangian(
                             device=accelerator.device,
                             train_loss_seq=train_loss_seq,
                             lambdas_current=lambdas_current,
+                            epsilon_override=epsilon_override,
                             **cfg.strategy
                         )
                         accelerator.backward(lagrangian)
@@ -425,7 +424,11 @@ def trainer_ally(cfg: DictConfig) -> None:
                     if first_visit_mask is not None and first_visit_mask.any():
                         first_visit_ids.append(global_id[first_visit_mask])
                         first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
-    
+
+                    if length_epsilon is not None and accelerator.is_main_process:
+                        epsilon_fit_lengths.append(lengths_batch)
+                        epsilon_fit_losses.append(train_loss_seq.detach().cpu().numpy())
+
                     # Log metrics
                     pbar.update(1)
                     metrics["num_steps"] += 1
@@ -435,20 +438,22 @@ def trainer_ally(cfg: DictConfig) -> None:
                     metrics["local_num_train_pred"] += torch.sum(y != -100).item()
                     metrics["local_sum_train_loss"] += train_loss_batch.item() * torch.sum(y != -100).item()
                     metrics["local_num_train_correct"] += torch.sum(torch.argmax(logits, dim=-1) == y).item()
-    
+
                     # Compute gradient and update dual variables
                     lambdas_updated = update_dual_variables(
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
                         lr_dual=dual_lr,
                         dtype=dtype_reg_head,
+                        epsilon_override=epsilon_override,
                         **cfg.strategy,
                     )
-    
+
                     lagrangian, constraint_violations = get_lagrangian(
                         device=accelerator.device,
                         train_loss_seq=train_loss_seq,
                         lambdas_current=lambdas_current,
+                        epsilon_override=epsilon_override,
                         **cfg.strategy
                     )
                     accelerator.backward(lagrangian)
@@ -531,6 +536,25 @@ def trainer_ally(cfg: DictConfig) -> None:
                         if accelerator.is_main_process:
                             save_aux_state(chk_dir, project_config.iteration - 1, lambdas, flag, idx_order, best_reg, optimizer_reg.state_dict(), embeddings)
                         break
+
+        # Refit the length-conditional epsilon table from this round's own real losses,
+        # for use starting next round. Fit on main-process data only (same subsample
+        # caveat as the lambda-vs-loss diagnostic below), then broadcast the resulting
+        # small lookup table to every rank so all ranks apply an identical threshold.
+        if length_epsilon is not None:
+            local_lengths = np.concatenate(epsilon_fit_lengths) if epsilon_fit_lengths else np.array([])
+            local_losses = np.concatenate(epsilon_fit_losses) if epsilon_fit_losses else np.array([])
+            if accelerator.is_main_process:
+                length_epsilon.update(local_lengths, local_losses)
+            state = broadcast_object_list(
+                [length_epsilon.state_dict() if accelerator.is_main_process else None]
+            )[0]
+            length_epsilon.load_state_dict(state)
+            accelerator.print(
+                f"[Round {rd}] nonparametric epsilon refit from {len(local_losses)} main-process samples "
+                f"-> margin={length_epsilon.margin:.4g}, bin_epsilon mean={length_epsilon.bin_epsilon.mean():.4g}, "
+                f"min={length_epsilon.bin_epsilon.min():.4g}, max={length_epsilon.bin_epsilon.max():.4g}"
+            )
 
         # Diagnostic: is LambdaNet's predicted lambda for this round actually associated
         # with real difficulty? Correlate the predicted lambda (snapshotted before

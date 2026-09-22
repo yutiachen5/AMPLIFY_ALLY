@@ -78,6 +78,7 @@ class ProteinTokenizer(object):
         max_length: Optional[int] = None,
         add_special_tokens: bool = True,
         random_truncate: bool = True,
+        generator: Optional[torch.Generator] = None,
         **kwargs,
     ) -> Union[List[int], Tensor]:
         """Encodes a list of tokens into a list or tensor of token indices.
@@ -88,6 +89,9 @@ class ProteinTokenizer(object):
             add_special_tokens (bool, optional): Add special tokens <bos> and <eos> at the start and end.. Defaults to True.
             random_truncate (bool, optional): Truncate the sequence to a random subsequence of if longer than truncate.
             Defaults to True.
+            generator (torch.Generator | None, optional): RNG source for the truncation offset. Pass a
+                per-sample-seeded generator for reproducible truncation (e.g. frozen validation masking).
+                Defaults to None (global RNG state).
 
         Returns:
             Union[List[int], Tensor]: Token indices.
@@ -97,7 +101,7 @@ class ProteinTokenizer(object):
             token_ids = [self.bos_token_id] + token_ids + [self.eos_token_id]
         if max_length is not None and max_length < len(token_ids):
             if random_truncate:
-                offset = int(torch.randint(0, len(token_ids) - max_length, (1,)).item())
+                offset = int(torch.randint(0, len(token_ids) - max_length, (1,), generator=generator).item())
             else:
                 offset = 0
             token_ids = token_ids[offset : offset + max_length]

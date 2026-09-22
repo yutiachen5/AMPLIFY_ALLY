@@ -19,13 +19,26 @@ class DataCollatorMLM(object):
         padding: str,
         pad_to_multiple_of: int,
         dtype: torch.dtype,
+        deterministic_seed: int | None = None,
         **kwargs,
     ) -> None:
-        """Data collator used for masked language modeling and span masking."""
+        """Data collator used for masked language modeling and span masking.
+
+        Args:
+            deterministic_seed (int | None, optional): If set, every random draw for a
+                sample (truncation offset, mask positions, MASK/random-word replacement)
+                is seeded from `deterministic_seed + global_id` instead of the global RNG
+                state — so the same physical tokens get masked for a given sample every
+                time it's evaluated, regardless of run, worker count, or how many times
+                it's evaluated. Intended for validation only; leave None for training so
+                masking stays a stochastic augmentation across epochs. Only covers the
+                plain-MLM masking path, not span masking (span_probability > 0).
+        """
         # Tokenizer
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.random_truncate = random_truncate
+        self.deterministic_seed = deterministic_seed
 
         # Return labels (not compatible with accelerate)
         self.return_labels = return_labels
@@ -60,10 +73,26 @@ class DataCollatorMLM(object):
         """
         # Unpack
         global_id, labels, proteins = zip(*inputs)
+
+        # One generator per sample, seeded from its global_id, reused for every random
+        # draw below (truncation, mask positions, replacement decisions, word choice) in
+        # a fixed call order — so a given sample's mask is identical run to run, worker
+        # to worker, regardless of what else is going on in the process's RNG state.
+        generators = (
+            [torch.Generator().manual_seed(self.deterministic_seed + int(gid)) for gid in global_id]
+            if self.deterministic_seed is not None else None
+        )
+
         global_id = torch.tensor(global_id, dtype=torch.long)
 
         # Tokenize the inputs
-        proteins = [self.tokenizer.encode(p, self.max_length, random_truncate=self.random_truncate) for p in proteins]
+        if generators is not None:
+            proteins = [
+                self.tokenizer.encode(p, self.max_length, random_truncate=self.random_truncate, generator=g)
+                for p, g in zip(proteins, generators)
+            ]
+        else:
+            proteins = [self.tokenizer.encode(p, self.max_length, random_truncate=self.random_truncate) for p in proteins]
 
         # Compute the length of the batch min(longest sequence, max_length)
         if self.padding == "longest":
@@ -102,7 +131,12 @@ class DataCollatorMLM(object):
         if self.span_probability is None or self.span_max is None or self.span_probability == 0 or self.span_max == 1:
             probability_matrix = torch.full(x.shape, self.mask_probability)
             probability_matrix.masked_fill_(pad_mask | bos_mask | eos_mask, value=0.0)
-            masked_ids = torch.bernoulli(probability_matrix).bool()
+            if generators is not None:
+                masked_ids = torch.stack([
+                    torch.bernoulli(probability_matrix[i], generator=g).bool() for i, g in enumerate(generators)
+                ])
+            else:
+                masked_ids = torch.bernoulli(probability_matrix).bool()
 
         # Span masking
         else:
@@ -122,14 +156,30 @@ class DataCollatorMLM(object):
         # Only compute the loss on the masked tokens (-100 is the default ignore_index of PyTorch)
         y[~masked_ids] = -100
 
-        # 80% of the time, the masked input tokens are replaced with <MASK>
-        replaced_ids = torch.bernoulli(torch.full(y.shape, 0.8)).bool() & masked_ids
-        x[replaced_ids] = self.tokenizer.mask_token_id
+        if generators is not None:
+            # 80% of the time, the masked input tokens are replaced with <MASK>
+            replaced_ids = torch.stack([
+                torch.bernoulli(torch.full(y.shape[1:], 0.8), generator=g).bool() for g in generators
+            ]) & masked_ids
+            x[replaced_ids] = self.tokenizer.mask_token_id
 
-        # 10% of the time, the masked input tokens are replaced with a random word
-        random_ids = torch.bernoulli(torch.full(y.shape, 0.5)).bool() & masked_ids & ~replaced_ids
-        random_words = torch.multinomial(self.replacement_ids, torch.numel(x), replacement=True).view(x.size())
-        x[random_ids] = random_words[random_ids]
+            # 10% of the time, the masked input tokens are replaced with a random word
+            random_ids = torch.stack([
+                torch.bernoulli(torch.full(y.shape[1:], 0.5), generator=g).bool() for g in generators
+            ]) & masked_ids & ~replaced_ids
+            random_words = torch.stack([
+                torch.multinomial(self.replacement_ids, x.shape[1], replacement=True, generator=g) for g in generators
+            ])
+            x[random_ids] = random_words[random_ids]
+        else:
+            # 80% of the time, the masked input tokens are replaced with <MASK>
+            replaced_ids = torch.bernoulli(torch.full(y.shape, 0.8)).bool() & masked_ids
+            x[replaced_ids] = self.tokenizer.mask_token_id
+
+            # 10% of the time, the masked input tokens are replaced with a random word
+            random_ids = torch.bernoulli(torch.full(y.shape, 0.5)).bool() & masked_ids & ~replaced_ids
+            random_words = torch.multinomial(self.replacement_ids, torch.numel(x), replacement=True).view(x.size())
+            x[random_ids] = random_words[random_ids]
 
         # Replace masked position with float(-inf), True: inf, False: 0
         pad_mask = torch.where(pad_mask, float("-inf"), float(0.0)).type(self.dtype)

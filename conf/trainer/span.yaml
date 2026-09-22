@@ -25,6 +25,7 @@ validation:
   span_max: 1
   num_workers: 4
   batch_size: 64
+  freeze_mask: True # freeze masking (seeded from cfg.seed) so the same tokens are masked every eval, every round, every run
   label_smoothing: 0
   weights: null #{L: 1.5, A: 1, G: 1, ...}
   exclude_special_tokens_replacement: False
