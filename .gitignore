@@ -145,6 +145,7 @@ ProteinGym/
 downstream_tasks/
 slurms/
 data/
+wandb/
 
 # Slurm jobs and logs
 *.out
