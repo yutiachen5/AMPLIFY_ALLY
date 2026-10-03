@@ -162,3 +162,6 @@ jobs/
 
 # Jupyter Notebooks
 scripts/viz.ipynb
+
+# Wandb sync script
+scripts/wandb_sync.py
