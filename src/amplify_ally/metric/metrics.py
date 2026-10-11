@@ -12,15 +12,30 @@ class Metrics(defaultdict):
     def __init__(self):
         super().__init__(int)
 
-        self.best_val_ppl = {"uniprot": float("inf"), "oas": float("inf"), "pdb": float("inf"), "pg": float("-inf")}
-        self.best_mdl_state = {"uniprot": None, "oas": None, "pdb": None, "pg": None}
+        # Only these eval sets get a best-model checkpoint (min val ppl, or max SCC for pg)
+        self.best_val_ppl = {"uniref20": float("inf"), "pg": float("-inf")}
+        self.best_mdl_state = {"uniref20": None, "pg": None}
 
     def state_dict(self):
-        return dict(self)
+        # Best scores/weights ride along in each checkpoint so a resume keeps the best-so-far as of that
+        # checkpoint (not a later one). Kept out of the dict items, which must all be numeric for log().
+        return {
+            **dict(self),
+            "_best_val_ppl": dict(self.best_val_ppl),
+            "_best_mdl_state": dict(self.best_mdl_state),
+        }
 
     def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        best_val_ppl = state_dict.pop("_best_val_ppl", {})
+        best_mdl_state = state_dict.pop("_best_mdl_state", {})
         for k, v in state_dict.items():
             self[k] = v
+        # Older checkpoints have no best state; sets not tracked anymore are ignored
+        for eval_set in self.best_val_ppl:
+            if best_mdl_state.get(eval_set) is not None:
+                self.best_val_ppl[eval_set] = best_val_ppl[eval_set]
+                self.best_mdl_state[eval_set] = best_mdl_state[eval_set]
 
     def _is_better(self, eval_set, current_val):
         if eval_set == "pg":
@@ -79,8 +94,8 @@ class Metrics(defaultdict):
                 metrics_agg[f"local_{eval_set}_num_val_correct"] / metrics_agg[f"local_{eval_set}_num_val_pred"]
             )
 
-            # if self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
-            #     self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
+            if eval_set in self.best_val_ppl and self._is_better(eval_set, metrics_log[f"{eval_set}_val_perplexity"]):
+                self._save_best(eval_set, metrics_log[f"{eval_set}_val_perplexity"], accelerator, model)
 
         if pg_scc is not None:
             metrics_log["proteingym_scc"] = pg_scc

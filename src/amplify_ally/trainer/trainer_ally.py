@@ -594,7 +594,7 @@ def trainer_ally(cfg: DictConfig) -> None:
         metrics["num_epochs"] += 1
         metrics["num_batches_in_epoch"] = 0
 
-    # Save the best models with min val ppl on eval tasks
+    # Save the best models (min val ppl, or max SCC for pg) on tracked eval tasks
     summary_dir = os.path.join(cfg.trainer.dir, "summary")
     os.makedirs(summary_dir, exist_ok=True)
 
@@ -602,9 +602,9 @@ def trainer_ally(cfg: DictConfig) -> None:
         accelerator.wait_for_everyone()
         unwrapped = accelerator.unwrap_model(model)
 
-        for eval_set in ["uniprot", "oas", "pdb"]:
-            if metrics.best_mdl_state[eval_set] is not None:
-                unwrapped.load_state_dict({k: v.to(accelerator.device) for k, v in metrics.best_mdl_state[eval_set].items()})
+        for eval_set, best_state in metrics.best_mdl_state.items():
+            if best_state is not None:
+                unwrapped.load_state_dict({k: v.to(accelerator.device) for k, v in best_state.items()})
                 accelerator.save_model(unwrapped, os.path.join(summary_dir, eval_set))
 
     if constrained:
