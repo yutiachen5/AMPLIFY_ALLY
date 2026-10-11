@@ -44,7 +44,6 @@ def get_mlm_dataloader(
     merge: bool = False,
     seed: int = 42,
     shuffle: bool = True,
-    freeze_mask: bool = False,
     **kwargs,
 ) -> DataLoader:
     """Public wrapper for constructing a ``torch`` dataloader.
@@ -75,9 +74,6 @@ def get_mlm_dataloader(
         seed (int): Random seed for workers. Defualts to 42.
         shuffle (bool, optional): Shuffle sample order when merge=True (e.g. round 1's
             training pool, which has no idx_order override). Defaults to True.
-        freeze_mask (bool, optional): If True, freezes masking (using `seed` as the base)
-            so a given sample always gets the same mask (see DataCollatorMLM). Use for
-            validation only — leave False for training. Defaults to False.
 
     Returns:
         torch.utils.data.DataLoader
@@ -107,7 +103,6 @@ def get_mlm_dataloader(
         padding,
         pad_to_multiple_of,
         dtype,
-        deterministic_seed=seed if freeze_mask else None,
     )
 
     if merge:
