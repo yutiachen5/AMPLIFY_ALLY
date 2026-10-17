@@ -13,7 +13,6 @@ import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed, broadcast_object_list
 from deepspeed.utils import safe_get_full_fp32_param
-from scipy.stats import spearmanr
 
 from ..config import config_schema, ConfigError
 from ..model import AMPLIFY, AMPLIFYConfig, LambdaNet
@@ -269,15 +268,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 # the same quantity that also drives the Lagrangian loss.
                 ranking_lambdas = lambdas
 
-                # Snapshot the ranking value right after it's produced (before any
-                # training this round could contaminate it with an empirical update), so
-                # we can check whether it's actually associated with real difficulty —
-                # i.e. the loss each still-untrained sample gets the first time it's ever
-                # trained. Whole-dataset indexed here (this branch reranks the full pool
-                # each round rather than introducing disjoint sets).
-                predicted_lambda_snapshot = ranking_lambdas.clone()
-                first_visit_ids, first_visit_losses = [], []
-
                 idx_order = compute_sample_order(
                     embeddings=embeddings,
                     lambdas=ranking_lambdas,
@@ -340,12 +330,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 lengths_batch = lengths[global_id]
                 epsilon_override = length_epsilon.lookup(lengths_batch)
 
-            # True for samples about to be trained on for the very first time ever
-            # (checked before the flag increment below) — used to test whether
-            # LambdaNet's predicted lambda for this round is actually associated with
-            # real difficulty (see the round-end Spearman check).
-            first_visit_mask = (flag[global_id] == 0) if (constrained and rd != 1) else None
-
             # Keep recored the number of times each sample was seen by the model
             flag[global_id] += 1
 
@@ -363,10 +347,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                     train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
                     train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
-
-                    if first_visit_mask is not None and first_visit_mask.any():
-                        first_visit_ids.append(global_id[first_visit_mask])
-                        first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
 
                     if length_epsilon is not None and accelerator.is_main_process:
                         epsilon_fit_lengths.append(lengths_batch)
@@ -413,10 +393,6 @@ def trainer_ally(cfg: DictConfig) -> None:
 
                 train_loss_seq = (train_loss_token * valid_pos).sum(dim=1) / valid_pos.sum(dim=1)
                 train_loss_batch = loss_fn_mean(logits.view(-1, cfg.tokenizer.vocab_size), y.view(-1))
-
-                if first_visit_mask is not None and first_visit_mask.any():
-                    first_visit_ids.append(global_id[first_visit_mask])
-                    first_visit_losses.append(train_loss_seq.detach().cpu().numpy()[first_visit_mask])
 
                 if length_epsilon is not None and accelerator.is_main_process:
                     epsilon_fit_lengths.append(lengths_batch)
@@ -531,9 +507,9 @@ def trainer_ally(cfg: DictConfig) -> None:
                     break
 
         # Refit the length-conditional epsilon table from this round's own real losses,
-        # for use starting next round. Fit on main-process data only (same subsample
-        # caveat as the lambda-vs-loss diagnostic below), then broadcast the resulting
-        # small lookup table to every rank so all ranks apply an identical threshold.
+        # for use starting next round. Fit on main-process data only (a subsample of
+        # the round under multi-GPU), then broadcast the resulting small lookup table
+        # to every rank so all ranks apply an identical threshold.
         if length_epsilon is not None:
             local_lengths = np.concatenate(epsilon_fit_lengths) if epsilon_fit_lengths else np.array([])
             local_losses = np.concatenate(epsilon_fit_losses) if epsilon_fit_losses else np.array([])
@@ -548,47 +524,6 @@ def trainer_ally(cfg: DictConfig) -> None:
                 f"-> margin={length_epsilon.margin:.4g}, bin_epsilon mean={length_epsilon.bin_epsilon.mean():.4g}, "
                 f"min={length_epsilon.bin_epsilon.min():.4g}, max={length_epsilon.bin_epsilon.max():.4g}"
             )
-
-        # Diagnostic: is LambdaNet's predicted lambda for this round actually associated
-        # with real difficulty? Correlate the predicted lambda (snapshotted before
-        # training started) against the loss each still-untrained sample got the first
-        # time it was ever trained. Main-process-only estimate over whatever fraction of
-        # first-visit samples landed on this rank's dataloader shard.
-        if constrained and rd != 1 and accelerator.is_main_process:
-            if not first_visit_ids:
-                accelerator.print(f"[Round {rd}] lambda-vs-loss check: no first-visit samples captured — skipping.")
-            else:
-                fv_ids = np.concatenate(first_visit_ids)
-                fv_losses = np.concatenate(first_visit_losses)
-                fv_predicted_lambda = predicted_lambda_snapshot[fv_ids].to(torch.float32).numpy()
-
-                # train_loss_seq can legitimately be NaN when a sample's random masking
-                # selects zero tokens (valid_pos.sum(dim=1) == 0 -> 0/0) — same case
-                # update_dual_variables guards against. A single NaN poisons spearmanr's
-                # result entirely, so drop those rows before correlating.
-                finite = np.isfinite(fv_losses) & np.isfinite(fv_predicted_lambda)
-                n_dropped = len(fv_losses) - finite.sum()
-                fv_losses, fv_predicted_lambda = fv_losses[finite], fv_predicted_lambda[finite]
-
-                if finite.sum() < 2:
-                    accelerator.print(
-                        f"[Round {rd}] lambda-vs-loss check: only {finite.sum()} finite samples "
-                        f"out of {len(finite)} captured (dropped_nan={n_dropped}) — not enough to correlate."
-                    )
-                elif fv_predicted_lambda.std() == 0 or fv_losses.std() == 0:
-                    accelerator.print(
-                        f"[Round {rd}] lambda-vs-loss check: zero variance — "
-                        f"predicted_lambda std={fv_predicted_lambda.std():.4g} "
-                        f"(min={fv_predicted_lambda.min():.4g}, max={fv_predicted_lambda.max():.4g}), "
-                        f"loss std={fv_losses.std():.4g} — rho is undefined, not just noisy."
-                    )
-                else:
-                    rho, pval = spearmanr(fv_predicted_lambda, fv_losses)
-                    accelerator.print(
-                        f"[Round {rd}] predicted-lambda vs first-visit-loss Spearman "
-                        f"rho={rho:.4f} (p={pval:.3g}, n={finite.sum()}, dropped_nan={n_dropped})"
-                    )
-                    accelerator.log({"lambda_vs_loss_spearman": rho, "lambda_vs_loss_n": int(finite.sum())})
 
         # Log metrics
         metrics["num_epochs"] += 1
