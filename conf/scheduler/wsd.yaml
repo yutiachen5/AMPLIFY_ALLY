@@ -1,0 +1,6 @@
+_name_: WSD
+# warmup-stable-decay: linear warmup, hold peak lr until final_step - decay_steps, then cosine decay to final_ratio
+final_ratio: 0.1
+final_step: 80000
+decay_steps: 16000
+warmup_steps: 1000
