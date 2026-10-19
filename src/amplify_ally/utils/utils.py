@@ -53,3 +53,16 @@ def load_aux_state(
     optimizer_reg_state = torch.load(optimizer_path, map_location="cpu") if os.path.exists(optimizer_path) else None
     print(f"[resume] Loaded checkpoint state from {folder}")
     return lambdas, flag, idx_order, best_reg, optimizer_reg_state
+
+def save_length_epsilon(chk_dir: str, it: int, state: dict) -> None:
+    folder = os.path.join(chk_dir, f"checkpoint_{it}")
+    os.makedirs(folder, exist_ok=True)
+    torch.save(state, os.path.join(folder, "length_epsilon.pt"))
+
+
+def load_length_epsilon(chk_dir: str, it: int) -> dict | None:
+    path = os.path.join(chk_dir, f"checkpoint_{it}", "length_epsilon.pt")
+    if not os.path.exists(path):
+        return None
+    # Holds numpy arrays, so it can't go through the weights_only loader
+    return torch.load(path, map_location="cpu", weights_only=False)

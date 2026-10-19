@@ -21,7 +21,7 @@ from ..loss import get_loss, get_lagrangian, update_dual_variables, LengthBinned
 from ..dataset import get_mlm_dataloader, update_mlm_dataloader, compute_sample_order, get_emb_dataloader, get_proteingym_dataloader
 from ..scheduler import get_scheduler
 from ..optimizer import get_optimizer
-from ..utils import save_aux_state
+from ..utils import save_aux_state, save_length_epsilon, load_length_epsilon
 from .trainer_lambdanet import LambdaNetTrainer
 from .evaluation import evaluate, evaluate_proteingym
 from .embedder import Embedder
@@ -220,6 +220,19 @@ def trainer_ally(cfg: DictConfig) -> None:
         )
         lambdas, flag, idx_order, best_reg = rs.lambdas, rs.flag, rs.idx_order, rs.best_reg
         dataloader = rs.dataloader
+
+        # Restore the epsilon table refit at the end of the checkpointed round, so the next
+        # round is gated exactly as it would have been without the interruption
+        if length_epsilon is not None:
+            eps_state = load_length_epsilon(chk_dir, it)
+            if eps_state is not None:
+                length_epsilon.load_state_dict(eps_state)
+                accelerator.print(f"[resume] Loaded nonparametric epsilon (margin={length_epsilon.margin:.4g}) from checkpoint_{it}")
+            else:
+                accelerator.print(
+                    f"[resume] WARNING: no length_epsilon.pt in checkpoint_{it} — falling back to scalar "
+                    f"epsilon={cfg.strategy.epsilon} for the next round, and margin will be recalibrated from it."
+                )
         
     # Get loss functions
     loss_fn = get_loss(accelerator.device, "none", **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
@@ -524,6 +537,12 @@ def trainer_ally(cfg: DictConfig) -> None:
                 f"-> margin={length_epsilon.margin:.4g}, bin_epsilon mean={length_epsilon.bin_epsilon.mean():.4g}, "
                 f"min={length_epsilon.bin_epsilon.min():.4g}, max={length_epsilon.bin_epsilon.max():.4g}"
             )
+
+            # The round's checkpoint was written inside the loop, before this refit — add the
+            # refit table to it so a resume from this round starts the next round with it.
+            # Skipped if the round ended without reaching its checkpoint step.
+            if accelerator.is_main_process and metrics["num_steps"] % cfg.strategy.n_steps == 0:
+                save_length_epsilon(chk_dir, project_config.iteration - 1, length_epsilon.state_dict())
 
         # Log metrics
         metrics["num_epochs"] += 1
